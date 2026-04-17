@@ -1,0 +1,4 @@
+test/
+*.tgz
+smoke-output.txt
+global-smoke.txt
