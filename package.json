@@ -1,6 +1,6 @@
 {
   "name": "codex-ai-replies-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "CLI for extracting Codex AI replies from the latest main-agent session rollout",
   "keywords": [
     "codex",
