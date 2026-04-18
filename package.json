@@ -1,12 +1,16 @@
 {
   "name": "codex-ai-replies-cli",
   "version": "0.2.0",
-  "description": "CLI for extracting Codex AI replies from the latest main-agent session rollout",
+  "description": "CLI for reading local Codex session rollouts and extracting assistant replies, tool calls, and MCP activity",
   "keywords": [
     "codex",
     "cli",
+    "transcript",
     "sessions",
+    "rollout",
     "jsonl",
+    "mcp",
+    "tools",
     "openai"
   ],
   "bin": {
@@ -21,7 +25,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "test:release": "node scripts/release-check.js"
   },
   "engines": {
     "node": ">=20"

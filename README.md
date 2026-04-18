@@ -1,10 +1,20 @@
 # codex-ai-replies-cli
 
-Extract assistant replies, tool calls, and MCP activity from local Codex session rollouts.
+Read local Codex session rollouts as a usable CLI transcript.
 
-This CLI reads `~/.codex/sessions`, finds the latest main-agent rollout by default, and turns JSONL session history into a readable timeline. It is useful when you want to inspect what Codex said, what tools it called, and which MCP actions ran during a session.
+`codex-ai-replies-cli` scans `~/.codex/sessions`, picks the latest main-agent rollout by default, and turns JSONL session history into readable output. It helps when you want to review what the assistant said, inspect tool-call sequences, or isolate MCP activity without digging through raw rollout files by hand.
+
+## Why Use It
+
+- Review assistant replies from a recent Codex run
+- Inspect tool calls and tool outputs alongside assistant messages
+- Isolate MCP activity for debugging or audit work
+- Save a readable transcript to a text file and open it immediately
+- Target a specific session by id or read a rollout file directly
 
 ## Install
+
+Global install is the primary workflow:
 
 ```bash
 npm install -g codex-ai-replies-cli
@@ -16,24 +26,15 @@ After install, the recommended short command is:
 cxr
 ```
 
-## What It Does
+If you prefer not to install globally, you can also run it with `npx`:
 
-- Reads the latest main-agent rollout by default
-- Excludes subagent rollouts
-- Supports selecting a session explicitly by `--id` or `--raw-file`
-- Prefers exact rollout identity matches and main-agent/root rollouts when `--id` could match multiple files
-- Extracts assistant replies from `event_msg.agent_message`
-- Falls back to `response_item.message.output_text` when needed
-- Lets you select assistant, tool, or MCP events directly
-- Treats `--include-tools` and `--include-mcp` as category selectors
-- Applies `--count` after category filtering, so targeted extracts stay accurate
-- Fails fast on malformed rollout JSONL with file and line details instead of silently dropping bad lines
-- Formats MCP arguments as readable blocks by default
-- Saves output to a text file and opens it automatically when `--save` or `--open` is used
+```bash
+npx codex-ai-replies-cli --help
+```
 
-## Quick Examples
+## Quick Start
 
-Read the latest main-agent session:
+Show assistant replies from the latest main-agent session:
 
 ```bash
 cxr
@@ -45,45 +46,45 @@ Read a specific session by id:
 cxr --id 019d9bb5-d432-7453-a92c-b3376ef23b58
 ```
 
-Show a mixed timeline with tool and MCP events:
+Show a mixed timeline with assistant, tool, and MCP events:
 
 ```bash
-cxr --include-tools --include-mcp --timeline
+cxr --include-tools --include-mcp
 ```
 
-Read only MCP activity from a specific session:
+Read only MCP activity:
 
 ```bash
-cxr --id 019d9bb5-d432-7453-a92c-b3376ef23b58 --include-mcp
+cxr --include-mcp
 ```
 
-Read only tool calls and tool outputs:
-
-```bash
-cxr --only tools --json
-```
-
-Save output and open it in VS Code:
+Save the latest extracted items and open the output file:
 
 ```bash
 cxr --count 20 --save --output ./messages.txt
 ```
 
-Render MCP arguments as compact one-line JSON:
+## What The CLI Actually Reads
 
-```bash
-cxr --include-mcp --timeline --compact-arguments
-```
+- Defaults to `~/.codex/sessions`
+- Chooses the latest root/main-agent rollout when no selector is given
+- Excludes subagent rollouts from the default lookup
+- Accepts `--id` to select a specific session
+- Accepts `--raw-file` to read one rollout JSONL file directly
 
-Read a specific rollout file directly:
+When `--id` could match more than one rollout, the CLI prefers exact rollout identity matches and main-agent/root rollouts over subagent matches.
 
-```bash
-cxr --raw-file ~/.codex/sessions/YYYY/MM/DD/rollout-....jsonl
-```
+## Output Modes
 
-## Output Shape
+By default, `cxr` prints assistant replies only. Timeline-related flags switch it into event selection mode:
 
-Formatted output uses a readable block structure:
+- `--include-tools` selects tool call and tool output events
+- `--include-mcp` selects MCP events
+- `--include-tools --include-mcp` returns the full mixed timeline with assistant, tool, and MCP events together
+- `--only assistant|tools|mcp` forces a single category
+- `--timeline` keeps selected events in timestamp order, and becomes optional once include flags are present
+
+Formatted output uses a readable block layout:
 
 ```txt
 ==========
@@ -97,41 +98,61 @@ arguments:
 }
 ```
 
-## Options
+Use `--json` if you want machine-friendly output instead.
+
+## Examples
+
+Read only tool calls and tool outputs:
+
+```bash
+cxr --only tools --json
+```
+
+Render MCP arguments as compact one-line JSON:
+
+```bash
+cxr --include-mcp --compact-arguments
+```
+
+Read a rollout file directly:
+
+```bash
+cxr --raw-file ~/.codex/sessions/YYYY/MM/DD/rollout-....jsonl
+```
+
+Use a custom sessions root:
+
+```bash
+cxr --sessions-root ./fixtures/sessions --include-tools
+```
+
+## Command Reference
 
 - `--count <n>`: limit to the latest `n` extracted items after category filtering, default `100`
-- `--save`: write the extracted messages to a text file and open it automatically
+- `--save`: write the extracted output to a text file and open it automatically
 - `--open`: legacy alias for saving and opening the output file
 - `--output <path>`: explicit output path
 - `--raw-file <path>`: read a specific rollout file instead of auto-discovering
-- `--id <sessionId>`: read a specific session id instead of the latest main-agent session, preferring exact identity matches and root rollouts
+- `--id <sessionId>`: read a specific session id instead of the latest main-agent session
 - `--json`: print JSON instead of the formatted text view
-- `--include-tools`: select function/tool call events; also enables timeline extraction
-- `--include-mcp`: select MCP events; also enables timeline extraction
-- `--timeline`: render the selected event categories in timestamp order; when category flags are present, it is optional
-- `--only <kind>`: select exactly one timeline category: `assistant`, `tools`, or `mcp`
+- `--include-tools`: select function/tool call events
+- `--include-mcp`: select MCP events
+- `--timeline`: render selected events in timestamp order
+- `--only <kind>`: select exactly one category: `assistant`, `tools`, or `mcp`
 - `--compact-arguments`: render MCP arguments as one-line JSON instead of formatted blocks
-- `--sessions-root <path>`: override the default sessions root, mainly for testing
+- `--sessions-root <path>`: override the default sessions root
 - `--help`: show help
 - `--version`: show package version
 
-## Selection Rules
-
-- `cxr` with no timeline-related flags still returns assistant replies only.
-- `--include-tools` returns tool events only unless you also add `--include-mcp`.
-- `--include-mcp` returns MCP events only unless you also add `--include-tools`.
-- `--include-tools --include-mcp` already switches to the full mixed timeline with assistant, tool, and MCP events together.
-- Adding `--timeline` to `--include-tools --include-mcp` is allowed and keeps the same mixed result.
-- `--only <kind>` forces a single category and cannot be combined with `--include-tools` or `--include-mcp`.
-
 ## Reliability Notes
 
-- If a rollout JSONL file contains malformed JSON, `cxr` stops and reports the exact file and line number.
-- `--id` no longer matches incidental path substrings; it prefers exact rollout identity fields and exact rollout filenames/paths.
+- Malformed rollout JSONL is treated as an error, with exact file and line reporting
+- Assistant extraction prefers `event_msg.agent_message` and falls back to assistant `response_item` text when needed
+- `--count` is applied after category filtering, so targeted extracts stay accurate
 
 ## Typical Use Cases
 
-- Review what the assistant actually replied in a prior session
+- Audit what Codex actually replied in a prior session
 - Inspect MCP interactions without opening raw JSONL files
-- Audit tool-call sequences around a bug or regression
-- Save a readable session transcript for sharing or archiving
+- Review tool-call sequences around a bug or regression
+- Save a readable transcript for sharing or archiving
