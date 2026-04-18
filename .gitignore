@@ -1,4 +1,5 @@
 node_modules/
+.worktrees/
 *.log
 *.tgz
 smoke-output.txt
