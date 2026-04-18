@@ -209,6 +209,76 @@ test("selects a specific session by id when --id is provided", () => {
   assert.doesNotMatch(result.stdout, /session bbb222/);
 });
 
+test("prefers the main-agent rollout when root and subagent share the requested id", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+  const sharedId = "019root-shared";
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T10-00-00-root.jsonl"), [
+    JSON.stringify({
+      timestamp: "2026-04-17T10:00:00Z",
+      type: "session_meta",
+      payload: { session_source: "cli", id: sharedId }
+    }),
+    JSON.stringify({ timestamp: "2026-04-17T10:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "root session" } })
+  ]);
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T11-00-00-subagent.jsonl"), [
+    JSON.stringify({
+      timestamp: "2026-04-17T11:00:00Z",
+      type: "session_meta",
+      payload: {
+        id: sharedId,
+        source: { subagent: { thread_spawn: { parent: "root-session" } } }
+      }
+    }),
+    JSON.stringify({ timestamp: "2026-04-17T11:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "subagent session" } })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--id",
+    sharedId
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /root session/);
+  assert.doesNotMatch(result.stdout, /subagent session/);
+});
+
+test("matches --id against rollout identity fields instead of incidental file path substrings", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T10-00-00-root-target-session.jsonl"), [
+    JSON.stringify({
+      timestamp: "2026-04-17T10:00:00Z",
+      type: "session_meta",
+      payload: { session_source: "cli", id: "actual-root-id" }
+    }),
+    JSON.stringify({ timestamp: "2026-04-17T10:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "root by filename only" } })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--id",
+    "target-session"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stderr, /No rollout file found for id: target-session/);
+});
+
 test("renders compact arguments when --compact-arguments is provided", () => {
   const tempDir = makeTempDir();
   const sessionsRoot = path.join(tempDir, "sessions");
@@ -418,6 +488,33 @@ test("fails fast when --only has no value", () => {
 
   assert.notEqual(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
   assert.match(result.stderr, /--only requires one of: assistant, tools, mcp/);
+});
+
+test("fails with file and line details when a rollout JSONL line is malformed", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+  const rolloutPath = path.join(sessionsRoot, "2026", "04", "18", "rollout-2026-04-18T14-00-00-root.jsonl");
+
+  writeLines(rolloutPath, [
+    JSON.stringify({ timestamp: "2026-04-18T14:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    "{ not valid json",
+    JSON.stringify({ timestamp: "2026-04-18T14:00:02Z", type: "event_msg", payload: { type: "agent_message", message: "should not be shown" } })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /Failed to parse rollout JSONL/);
+  assert.match(result.stderr, /rollout-2026-04-18T14-00-00-root\.jsonl/);
+  assert.match(result.stderr, /line 2/);
 });
 
 test("combined include flags enable the full mixed timeline even without --timeline", () => {

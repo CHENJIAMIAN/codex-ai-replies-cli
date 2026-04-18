@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { defaultOutputPath, extractMessages, extractTimeline, findLatestMainRollout, findRolloutById, formatMessages } from "./core.js";
+import { defaultOutputPath, extractMessages, extractTimeline, findLatestMainRollout, findRolloutById, formatMessages, readJsonLines } from "./core.js";
 
 const HELP_TEXT = `codex-ai-replies
 
@@ -139,11 +139,7 @@ function chooseRollout(options) {
     }
     return {
       filePath: options.rawFile,
-      entries: fs
-        .readFileSync(options.rawFile, "utf8")
-        .split(/\r?\n/)
-        .filter(Boolean)
-        .map((line) => JSON.parse(line))
+      entries: readJsonLines(options.rawFile)
     };
   }
 

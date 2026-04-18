@@ -24,19 +24,29 @@ function walkRollouts(rootDir) {
   return results;
 }
 
-function readJsonLines(filePath) {
-  return fs
-    .readFileSync(filePath, "utf8")
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
+function formatParseFailure(filePath, lineNumber, cause) {
+  const reason = cause instanceof Error && cause.message ? cause.message : String(cause);
+  return `Failed to parse rollout JSONL: ${filePath} line ${lineNumber}: ${reason}`;
+}
+
+export function readJsonLines(filePath) {
+  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+  const entries = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line) {
+      continue;
+    }
+
+    try {
+      entries.push(JSON.parse(line));
+    } catch (error) {
+      throw new Error(formatParseFailure(filePath, index + 1, error), { cause: error });
+    }
+  }
+
+  return entries;
 }
 
 function getSessionMeta(entries) {
@@ -56,31 +66,52 @@ function isSubagentRollout(entries) {
   return /sub.?agent/i.test(sessionSource);
 }
 
-function rolloutMatchesId(filePath, entries, requestedId) {
-  const wanted = String(requestedId ?? "").trim();
+function normalizeLookupValue(value) {
+  return String(value ?? "").trim();
+}
+
+function matchesExactRolloutPath(filePath, requestedId) {
+  const wanted = normalizeLookupValue(requestedId);
   if (!wanted) {
     return false;
   }
 
-  if (filePath.includes(wanted)) {
-    return true;
+  const normalizedWanted = path.normalize(wanted).toLowerCase();
+  const normalizedFilePath = path.normalize(filePath).toLowerCase();
+  const basename = path.basename(filePath);
+  const basenameWithoutExtension = basename.replace(/\.jsonl$/i, "");
+
+  return (
+    normalizedFilePath === normalizedWanted
+    || basename.toLowerCase() === wanted.toLowerCase()
+    || basenameWithoutExtension.toLowerCase() === wanted.toLowerCase()
+  );
+}
+
+function getRolloutMatchScore(filePath, entries, requestedId) {
+  const wanted = String(requestedId ?? "").trim();
+  if (!wanted) {
+    return -1;
   }
 
   const payload = getSessionMeta(entries);
-  if (!payload) {
-    return false;
+  const idMatches = payload
+    ? [payload.id, payload.session_id, payload.thread_id, payload.trace_id]
+      .filter(Boolean)
+      .map((value) => normalizeLookupValue(value))
+      .some((value) => value === wanted)
+    : false;
+
+  const pathMatches = matchesExactRolloutPath(filePath, wanted);
+  if (!idMatches && !pathMatches) {
+    return -1;
   }
 
-  const candidates = [
-    payload.id,
-    payload.session_id,
-    payload.thread_id,
-    payload.trace_id
-  ]
-    .filter(Boolean)
-    .map((value) => String(value));
-
-  return candidates.some((value) => value === wanted || value.includes(wanted));
+  let score = idMatches ? 100 : 10;
+  if (!isSubagentRollout(entries)) {
+    score += 1;
+  }
+  return score;
 }
 
 export function findLatestMainRollout(sessionsRoot) {
@@ -103,11 +134,18 @@ export function findRolloutById(sessionsRoot, requestedId) {
     throw new Error(`Sessions root not found: ${sessionsRoot}`);
   }
 
+  let bestMatch = null;
+
   for (const filePath of walkRollouts(sessionsRoot)) {
     const entries = readJsonLines(filePath);
-    if (rolloutMatchesId(filePath, entries, requestedId)) {
-      return { filePath, entries };
+    const score = getRolloutMatchScore(filePath, entries, requestedId);
+    if (score > (bestMatch?.score ?? -1)) {
+      bestMatch = { filePath, entries, score };
     }
+  }
+
+  if (bestMatch) {
+    return { filePath: bestMatch.filePath, entries: bestMatch.entries };
   }
 
   throw new Error(`No rollout file found for id: ${requestedId}`);

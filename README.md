@@ -21,11 +21,13 @@ cxr
 - Reads the latest main-agent rollout by default
 - Excludes subagent rollouts
 - Supports selecting a session explicitly by `--id` or `--raw-file`
+- Prefers exact rollout identity matches and main-agent/root rollouts when `--id` could match multiple files
 - Extracts assistant replies from `event_msg.agent_message`
 - Falls back to `response_item.message.output_text` when needed
 - Lets you select assistant, tool, or MCP events directly
 - Treats `--include-tools` and `--include-mcp` as category selectors
 - Applies `--count` after category filtering, so targeted extracts stay accurate
+- Fails fast on malformed rollout JSONL with file and line details instead of silently dropping bad lines
 - Formats MCP arguments as readable blocks by default
 - Saves output to a text file and opens it automatically when `--save` or `--open` is used
 
@@ -102,7 +104,7 @@ arguments:
 - `--open`: legacy alias for saving and opening the output file
 - `--output <path>`: explicit output path
 - `--raw-file <path>`: read a specific rollout file instead of auto-discovering
-- `--id <sessionId>`: read a specific session id instead of the latest main-agent session
+- `--id <sessionId>`: read a specific session id instead of the latest main-agent session, preferring exact identity matches and root rollouts
 - `--json`: print JSON instead of the formatted text view
 - `--include-tools`: select function/tool call events; also enables timeline extraction
 - `--include-mcp`: select MCP events; also enables timeline extraction
@@ -121,6 +123,11 @@ arguments:
 - `--include-tools --include-mcp` already switches to the full mixed timeline with assistant, tool, and MCP events together.
 - Adding `--timeline` to `--include-tools --include-mcp` is allowed and keeps the same mixed result.
 - `--only <kind>` forces a single category and cannot be combined with `--include-tools` or `--include-mcp`.
+
+## Reliability Notes
+
+- If a rollout JSONL file contains malformed JSON, `cxr` stops and reports the exact file and line number.
+- `--id` no longer matches incidental path substrings; it prefers exact rollout identity fields and exact rollout filenames/paths.
 
 ## Typical Use Cases
 
