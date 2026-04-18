@@ -17,14 +17,17 @@ Options:
   --raw-file <path>      read a specific rollout file instead of auto-discovering
   --id <sessionId>       read a specific session id instead of the latest session
   --json                 print JSON instead of the formatted text view
-  --include-tools        include function/tool call events
-  --include-mcp          include MCP events
-  --timeline             mix assistant, tool, and MCP events in timestamp order
+  --include-tools        select function/tool call events
+  --include-mcp          select MCP events
+  --timeline             render selected events in timeline order
+  --only <kind>          with timeline output, keep only assistant, tools, or mcp events
   --compact-arguments    render MCP arguments as one-line JSON
   --sessions-root <path> override the default sessions root
   --help                 show this help
   --version              show package version
 `;
+
+const TIMELINE_FILTER_VALUES = new Set(["assistant", "tools", "mcp"]);
 
 function readPackageVersion() {
   const packageJsonPath = new URL("../package.json", import.meta.url);
@@ -41,6 +44,7 @@ function parseArgs(argv) {
     includeTools: false,
     includeMcp: false,
     timeline: false,
+    only: null,
     compactArguments: false,
     sessionsRoot: path.join(os.homedir(), ".codex", "sessions"),
     outputPath: null,
@@ -91,6 +95,15 @@ function parseArgs(argv) {
       case "--timeline":
         options.timeline = true;
         break;
+      case "--only": {
+        const onlyValue = argv[i + 1];
+        if (!onlyValue || onlyValue.startsWith("--")) {
+          throw new Error("--only requires one of: assistant, tools, mcp");
+        }
+        options.only = String(onlyValue).trim().toLowerCase();
+        i += 1;
+        break;
+      }
       case "--compact-arguments":
         options.compactArguments = true;
         break;
@@ -104,6 +117,16 @@ function parseArgs(argv) {
 
   if (!Number.isInteger(options.count) || options.count < 1) {
     throw new Error("--count must be a positive integer");
+  }
+
+  if (options.only) {
+    if (!TIMELINE_FILTER_VALUES.has(options.only)) {
+      throw new Error("--only must be one of: assistant, tools, mcp");
+    }
+    if (options.includeTools || options.includeMcp) {
+      throw new Error("--only cannot be combined with --include-tools or --include-mcp");
+    }
+    options.timeline = true;
   }
 
   return options;
@@ -186,11 +209,18 @@ export async function main(argv) {
   }
 
   const selected = chooseRollout(options);
-  const messages = options.timeline
+  const useTimelineOutput = options.timeline || options.includeTools || options.includeMcp || Boolean(options.only);
+  const messages = useTimelineOutput
     ? extractTimeline(selected.entries, options)
     : extractMessages(selected.entries);
 
   if (messages.length === 0) {
+    if (options.only) {
+      throw new Error(`No ${options.only} timeline events found in: ${selected.filePath}`);
+    }
+    if (useTimelineOutput) {
+      throw new Error(`No timeline events found in: ${selected.filePath}`);
+    }
     throw new Error(`No assistant messages found in: ${selected.filePath}`);
   }
 

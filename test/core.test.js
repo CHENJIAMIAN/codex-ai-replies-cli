@@ -239,6 +239,219 @@ test("renders compact arguments when --compact-arguments is provided", () => {
   assert.doesNotMatch(result.stdout, /arguments:\n\{/);
 });
 
+test("extracts only MCP events without requiring --timeline", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "18", "rollout-2026-04-18T09-00-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-04-18T09:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({ timestamp: "2026-04-18T09:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "assistant before" } }),
+    JSON.stringify({ timestamp: "2026-04-18T09:00:02Z", type: "response_item", payload: { type: "function_call", name: "read_file", arguments: "{\"path\":\"a.txt\"}" } }),
+    JSON.stringify({
+      timestamp: "2026-04-18T09:00:03Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_begin", server: "deepwiki", tool: "ask_question", arguments: "{\"q\":\"types\"}" }
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-18T09:00:04Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_end", server: "deepwiki", tool: "ask_question", duration_ms: 45, success: true }
+    }),
+    JSON.stringify({ timestamp: "2026-04-18T09:00:05Z", type: "event_msg", payload: { type: "agent_message", message: "assistant after" } })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--include-mcp"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /\[mcp_tool_call_begin\] deepwiki ask_question/);
+  assert.match(result.stdout, /\[mcp_tool_call_end\] deepwiki ask_question/);
+  assert.doesNotMatch(result.stdout, /assistant before/);
+  assert.doesNotMatch(result.stdout, /assistant after/);
+  assert.doesNotMatch(result.stdout, /\[tool_call\] read_file/);
+});
+
+test("applies --count after filtering selected categories on a mixed timeline", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "18", "rollout-2026-04-18T10-00-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-04-18T10:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({ timestamp: "2026-04-18T10:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "assistant 1" } }),
+    JSON.stringify({
+      timestamp: "2026-04-18T10:00:02Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_begin", server: "server-1", tool: "alpha", arguments: "{\"step\":1}" }
+    }),
+    JSON.stringify({ timestamp: "2026-04-18T10:00:03Z", type: "event_msg", payload: { type: "agent_message", message: "assistant 2" } }),
+    JSON.stringify({
+      timestamp: "2026-04-18T10:00:04Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_begin", server: "server-2", tool: "beta", arguments: "{\"step\":2}" }
+    }),
+    JSON.stringify({ timestamp: "2026-04-18T10:00:05Z", type: "event_msg", payload: { type: "agent_message", message: "assistant 3" } }),
+    JSON.stringify({
+      timestamp: "2026-04-18T10:00:06Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_end", server: "server-2", tool: "beta", duration_ms: 20, success: true }
+    }),
+    JSON.stringify({ timestamp: "2026-04-18T10:00:07Z", type: "event_msg", payload: { type: "agent_message", message: "assistant 4" } })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--include-mcp",
+    "--timeline",
+    "--count",
+    "2"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /\[1\] 2026-04-18T10:00:04Z/);
+  assert.match(result.stdout, /\[mcp_tool_call_begin\] server-2 beta/);
+  assert.match(result.stdout, /\[2\] 2026-04-18T10:00:06Z/);
+  assert.match(result.stdout, /\[mcp_tool_call_end\] server-2 beta/);
+  assert.doesNotMatch(result.stdout, /assistant 4/);
+  assert.doesNotMatch(result.stdout, /server-1 alpha/);
+});
+
+test("treats include flags as category selectors and --timeline as ordering only", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "18", "rollout-2026-04-18T11-00-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-04-18T11:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({ timestamp: "2026-04-18T11:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "assistant only" } }),
+    JSON.stringify({ timestamp: "2026-04-18T11:00:02Z", type: "response_item", payload: { type: "function_call", name: "read_file", arguments: "{\"path\":\"notes.txt\"}" } }),
+    JSON.stringify({ timestamp: "2026-04-18T11:00:03Z", type: "response_item", payload: { type: "function_call_output", call_id: "call_9", output: "{\"ok\":true}" } }),
+    JSON.stringify({
+      timestamp: "2026-04-18T11:00:04Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_begin", server: "deepwiki", tool: "ask_question", arguments: "{\"q\":\"timeline\"}" }
+    })
+  ]);
+
+  const toolsTimeline = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--include-tools",
+    "--timeline"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(toolsTimeline.status, 0, `stdout=${toolsTimeline.stdout}\nstderr=${toolsTimeline.stderr}`);
+  assert.match(toolsTimeline.stdout, /\[tool_call\] read_file/);
+  assert.match(toolsTimeline.stdout, /\[tool_output\] call_9/);
+  assert.doesNotMatch(toolsTimeline.stdout, /assistant only/);
+  assert.doesNotMatch(toolsTimeline.stdout, /\[mcp_tool_call_begin\] deepwiki ask_question/);
+
+  const assistantTimeline = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--timeline"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(assistantTimeline.status, 0, `stdout=${assistantTimeline.stdout}\nstderr=${assistantTimeline.stderr}`);
+  assert.match(assistantTimeline.stdout, /assistant only/);
+  assert.doesNotMatch(assistantTimeline.stdout, /\[tool_call\] read_file/);
+  assert.doesNotMatch(assistantTimeline.stdout, /\[mcp_tool_call_begin\] deepwiki ask_question/);
+});
+
+test("keeps assistant fallback output available in timeline mode", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "18", "rollout-2026-04-18T12-00-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-04-18T12:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({
+      timestamp: "2026-04-18T12:00:01Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [
+          { type: "output_text", text: "assistant fallback text" }
+        ]
+      }
+    })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--only",
+    "assistant"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /assistant fallback text/);
+});
+
+test("fails fast when --only has no value", () => {
+  const result = spawnSync(process.execPath, [cliEntry, "--only"], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stderr, /--only requires one of: assistant, tools, mcp/);
+});
+
+test("combined include flags enable the full mixed timeline even without --timeline", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "18", "rollout-2026-04-18T13-00-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-04-18T13:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({ timestamp: "2026-04-18T13:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "assistant mixed" } }),
+    JSON.stringify({ timestamp: "2026-04-18T13:00:02Z", type: "response_item", payload: { type: "function_call", name: "read_file", arguments: "{\"path\":\"notes.txt\"}" } }),
+    JSON.stringify({
+      timestamp: "2026-04-18T13:00:03Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_begin", server: "deepwiki", tool: "ask_question", arguments: "{\"q\":\"mixed\"}" }
+    })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--include-tools",
+    "--include-mcp"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /assistant mixed/);
+  assert.match(result.stdout, /\[tool_call\] read_file/);
+  assert.match(result.stdout, /\[mcp_tool_call_begin\] deepwiki ask_question/);
+});
+
 test("exports both cxr and codex-ai-replies bin commands", () => {
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 

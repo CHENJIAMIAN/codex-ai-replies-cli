@@ -114,6 +114,10 @@ export function findRolloutById(sessionsRoot, requestedId) {
 }
 
 export function extractMessages(entries) {
+  return extractAssistantItems(entries);
+}
+
+function extractAssistantItems(entries) {
   const eventMessages = entries
     .filter((entry) => entry.type === "event_msg" && entry.payload?.type === "agent_message" && entry.payload?.message)
     .map((entry) => ({
@@ -139,11 +143,75 @@ export function extractMessages(entries) {
     );
 }
 
+function getTimelineKinds(options = {}) {
+  if (options.only === "assistant") {
+    return new Set(["assistant"]);
+  }
+
+  if (options.only === "tools") {
+    return new Set(["tool_call", "tool_output"]);
+  }
+
+  if (options.only === "mcp") {
+    return new Set(["mcp_tool_call_begin", "mcp_tool_call_end"]);
+  }
+
+  if (options.includeTools && options.includeMcp) {
+    return new Set([
+      "assistant",
+      "tool_call",
+      "tool_output",
+      "mcp_tool_call_begin",
+      "mcp_tool_call_end"
+    ]);
+  }
+
+  if (options.includeTools) {
+    return new Set(["tool_call", "tool_output"]);
+  }
+
+  if (options.includeMcp) {
+    return new Set(["mcp_tool_call_begin", "mcp_tool_call_end"]);
+  }
+
+  return new Set(["assistant"]);
+}
+
 export function extractTimeline(entries, options = {}) {
   const items = [];
+  const allowedKinds = getTimelineKinds(options);
+  const assistantItems = allowedKinds.has("assistant") ? extractAssistantItems(entries) : [];
+  let assistantIndex = 0;
 
   for (const entry of entries) {
-    if (entry.type === "event_msg" && entry.payload?.type === "agent_message" && entry.payload?.message) {
+    if (allowedKinds.has("assistant")) {
+      while (assistantIndex < assistantItems.length && assistantItems[assistantIndex].timestamp === String(entry.timestamp ?? "")) {
+        items.push(assistantItems[assistantIndex]);
+        assistantIndex += 1;
+      }
+      if (
+        entry.type === "event_msg"
+        && entry.payload?.type === "agent_message"
+        && entry.payload?.message
+      ) {
+        continue;
+      }
+      if (
+        entry.type === "response_item"
+        && entry.payload?.type === "message"
+        && entry.payload?.role === "assistant"
+      ) {
+        continue;
+      }
+    }
+
+    if (
+      allowedKinds.has("assistant")
+      && assistantItems.length === 0
+      && entry.type === "event_msg"
+      && entry.payload?.type === "agent_message"
+      && entry.payload?.message
+    ) {
       items.push({
         kind: "assistant",
         timestamp: String(entry.timestamp ?? ""),
@@ -152,9 +220,12 @@ export function extractTimeline(entries, options = {}) {
       continue;
     }
 
-    if (options.includeMcp && entry.type === "event_msg") {
+    if (
+      (allowedKinds.has("mcp_tool_call_begin") || allowedKinds.has("mcp_tool_call_end"))
+      && entry.type === "event_msg"
+    ) {
       const payloadType = String(entry.payload?.type ?? "");
-      if (payloadType === "mcp_tool_call_begin") {
+      if (payloadType === "mcp_tool_call_begin" && allowedKinds.has("mcp_tool_call_begin")) {
         const server = String(entry.payload?.invocation?.server ?? entry.payload?.server ?? "").trim();
         const tool = String(entry.payload?.invocation?.tool ?? entry.payload?.tool ?? "").trim();
         items.push({
@@ -166,7 +237,7 @@ export function extractTimeline(entries, options = {}) {
         continue;
       }
 
-      if (payloadType === "mcp_tool_call_end") {
+      if (payloadType === "mcp_tool_call_end" && allowedKinds.has("mcp_tool_call_end")) {
         const server = String(entry.payload?.invocation?.server ?? entry.payload?.server ?? "").trim();
         const tool = String(entry.payload?.invocation?.tool ?? entry.payload?.tool ?? "").trim();
         items.push({
@@ -179,9 +250,12 @@ export function extractTimeline(entries, options = {}) {
       }
     }
 
-    if (options.includeTools && entry.type === "response_item") {
+    if (
+      (allowedKinds.has("tool_call") || allowedKinds.has("tool_output"))
+      && entry.type === "response_item"
+    ) {
       const payloadType = String(entry.payload?.type ?? "");
-      if (payloadType === "function_call") {
+      if (payloadType === "function_call" && allowedKinds.has("tool_call")) {
         items.push({
           kind: "tool_call",
           timestamp: String(entry.timestamp ?? ""),
@@ -191,7 +265,7 @@ export function extractTimeline(entries, options = {}) {
         continue;
       }
 
-      if (payloadType === "function_call_output") {
+      if (payloadType === "function_call_output" && allowedKinds.has("tool_output")) {
         items.push({
           kind: "tool_output",
           timestamp: String(entry.timestamp ?? ""),
@@ -200,6 +274,11 @@ export function extractTimeline(entries, options = {}) {
         });
       }
     }
+  }
+
+  while (assistantIndex < assistantItems.length) {
+    items.push(assistantItems[assistantIndex]);
+    assistantIndex += 1;
   }
 
   return items;

@@ -23,7 +23,9 @@ cxr
 - Supports selecting a session explicitly by `--id` or `--raw-file`
 - Extracts assistant replies from `event_msg.agent_message`
 - Falls back to `response_item.message.output_text` when needed
-- Optionally includes function/tool calls and MCP events in a single timeline
+- Lets you select assistant, tool, or MCP events directly
+- Treats `--include-tools` and `--include-mcp` as category selectors
+- Applies `--count` after category filtering, so targeted extracts stay accurate
 - Formats MCP arguments as readable blocks by default
 - Saves output to a text file and opens it automatically when `--save` or `--open` is used
 
@@ -45,6 +47,18 @@ Show a mixed timeline with tool and MCP events:
 
 ```bash
 cxr --include-tools --include-mcp --timeline
+```
+
+Read only MCP activity from a specific session:
+
+```bash
+cxr --id 019d9bb5-d432-7453-a92c-b3376ef23b58 --include-mcp
+```
+
+Read only tool calls and tool outputs:
+
+```bash
+cxr --only tools --json
 ```
 
 Save output and open it in VS Code:
@@ -83,20 +97,30 @@ arguments:
 
 ## Options
 
-- `--count <n>`: limit to the latest `n` messages, default `100`
+- `--count <n>`: limit to the latest `n` extracted items after category filtering, default `100`
 - `--save`: write the extracted messages to a text file and open it automatically
 - `--open`: legacy alias for saving and opening the output file
 - `--output <path>`: explicit output path
 - `--raw-file <path>`: read a specific rollout file instead of auto-discovering
 - `--id <sessionId>`: read a specific session id instead of the latest main-agent session
 - `--json`: print JSON instead of the formatted text view
-- `--include-tools`: include function/tool call events
-- `--include-mcp`: include MCP events
-- `--timeline`: mix assistant, tool, and MCP events in timestamp order
+- `--include-tools`: select function/tool call events; also enables timeline extraction
+- `--include-mcp`: select MCP events; also enables timeline extraction
+- `--timeline`: render the selected event categories in timestamp order; when category flags are present, it is optional
+- `--only <kind>`: select exactly one timeline category: `assistant`, `tools`, or `mcp`
 - `--compact-arguments`: render MCP arguments as one-line JSON instead of formatted blocks
 - `--sessions-root <path>`: override the default sessions root, mainly for testing
 - `--help`: show help
 - `--version`: show package version
+
+## Selection Rules
+
+- `cxr` with no timeline-related flags still returns assistant replies only.
+- `--include-tools` returns tool events only unless you also add `--include-mcp`.
+- `--include-mcp` returns MCP events only unless you also add `--include-tools`.
+- `--include-tools --include-mcp` already switches to the full mixed timeline with assistant, tool, and MCP events together.
+- Adding `--timeline` to `--include-tools --include-mcp` is allowed and keeps the same mixed result.
+- `--only <kind>` forces a single category and cannot be combined with `--include-tools` or `--include-mcp`.
 
 ## Typical Use Cases
 
