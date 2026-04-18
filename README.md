@@ -10,6 +10,12 @@ This CLI reads `~/.codex/sessions`, finds the latest main-agent rollout by defau
 npm install -g codex-ai-replies-cli
 ```
 
+After install, the recommended short command is:
+
+```bash
+cxr
+```
+
 ## What It Does
 
 - Reads the latest main-agent rollout by default
@@ -26,37 +32,37 @@ npm install -g codex-ai-replies-cli
 Read the latest main-agent session:
 
 ```bash
-codex-ai-replies
+cxr
 ```
 
 Read a specific session by id:
 
 ```bash
-codex-ai-replies --id 019d9bb5-d432-7453-a92c-b3376ef23b58
+cxr --id 019d9bb5-d432-7453-a92c-b3376ef23b58
 ```
 
 Show a mixed timeline with tool and MCP events:
 
 ```bash
-codex-ai-replies --include-tools --include-mcp --timeline
+cxr --include-tools --include-mcp --timeline
 ```
 
 Save output and open it in VS Code:
 
 ```bash
-codex-ai-replies --count 20 --save --output ./messages.txt
+cxr --count 20 --save --output ./messages.txt
 ```
 
 Render MCP arguments as compact one-line JSON:
 
 ```bash
-codex-ai-replies --include-mcp --timeline --compact-arguments
+cxr --include-mcp --timeline --compact-arguments
 ```
 
 Read a specific rollout file directly:
 
 ```bash
-codex-ai-replies --raw-file ~/.codex/sessions/YYYY/MM/DD/rollout-....jsonl
+cxr --raw-file ~/.codex/sessions/YYYY/MM/DD/rollout-....jsonl
 ```
 
 ## Output Shape

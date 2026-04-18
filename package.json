@@ -10,6 +10,7 @@
     "openai"
   ],
   "bin": {
+    "cxr": "bin/codex-ai-replies.js",
     "codex-ai-replies": "bin/codex-ai-replies.js"
   },
   "type": "module",

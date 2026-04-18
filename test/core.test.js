@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const cliEntry = path.join(repoRoot, "bin", "codex-ai-replies.js");
+const packageJsonPath = path.join(repoRoot, "package.json");
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "codex-ai-replies-cli-"));
@@ -236,4 +237,11 @@ test("renders compact arguments when --compact-arguments is provided", () => {
   assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
   assert.match(result.stdout, /arguments: \{"q":"types"\}/);
   assert.doesNotMatch(result.stdout, /arguments:\n\{/);
+});
+
+test("exports both cxr and codex-ai-replies bin commands", () => {
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+
+  assert.equal(packageJson.bin.cxr, "bin/codex-ai-replies.js");
+  assert.equal(packageJson.bin["codex-ai-replies"], "bin/codex-ai-replies.js");
 });
