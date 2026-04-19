@@ -11,7 +11,8 @@ const npmBin = process.env.RELEASE_NPM_BIN || "npm";
 
 function run(command, args) {
   const isCmdShim = /\.cmd$/i.test(command);
-  const result = spawnSync(isCmdShim ? "cmd.exe" : command, isCmdShim ? ["/d", "/s", "/c", command, ...args] : args, {
+  const useCmdShell = isCmdShim || (process.platform === "win32" && command === "npm");
+  const result = spawnSync(useCmdShell ? "cmd.exe" : command, useCmdShell ? ["/d", "/s", "/c", command, ...args] : args, {
     cwd: repoRoot,
     encoding: "utf8"
   });

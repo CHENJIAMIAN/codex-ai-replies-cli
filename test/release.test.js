@@ -18,7 +18,12 @@ function writeCommandShim(filePath, lines) {
   fs.writeFileSync(filePath, `${lines.join("\r\n")}\r\n`, "utf8");
 }
 
-function runFinalReleaseWithShims({ gitResponses, npmResponses }) {
+function runFinalReleaseWithShims({
+  gitResponses,
+  npmResponses,
+  gitBin = "git.cmd",
+  npmBin = "npm.cmd"
+}) {
   const tempDir = makeTempDir();
   const shimDir = path.join(tempDir, "bin");
   const gitLogPath = path.join(tempDir, "git.log");
@@ -47,8 +52,8 @@ function runFinalReleaseWithShims({ gitResponses, npmResponses }) {
     encoding: "utf8",
     env: {
       ...process.env,
-      RELEASE_GIT_BIN: "git.cmd",
-      RELEASE_NPM_BIN: "npm.cmd",
+      RELEASE_GIT_BIN: gitBin,
+      RELEASE_NPM_BIN: npmBin,
       PATH: `${shimDir};${process.env.PATH ?? ""}`
     }
   });
@@ -132,6 +137,32 @@ test("final release workflow runs checks and prints exact next commands without 
   assert.match(gitLog, /status --short/);
   assert.match(gitLog, /rev-parse --abbrev-ref HEAD/);
   assert.match(gitLog, /rev-parse --short HEAD/);
+  assert.match(npmLog, /^test/m);
+  assert.match(npmLog, /^run test:release/m);
+});
+
+test("final release workflow can invoke npm through the standard Windows npm shim name", () => {
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+  const escapedVersion = packageJson.version.replaceAll(".", "\\.");
+
+  const { result, gitLog, npmLog } = runFinalReleaseWithShims({
+    gitResponses: {
+      "status --short": { status: 0, stdout: "" },
+      "rev-parse --abbrev-ref HEAD": { status: 0, stdout: "release/candidate\n" },
+      "rev-parse --short HEAD": { status: 0, stdout: "abc1234\n" }
+    },
+    npmResponses: {
+      "test": { status: 0, stdout: "all tests passed\n" },
+      "run test:release": { status: 0, stdout: "release checks passed\n" }
+    },
+    npmBin: "npm"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /Final release checks passed/);
+  assert.match(result.stdout, new RegExp(`Version: ${escapedVersion}`));
+  assert.match(gitLog, /status --short/);
   assert.match(npmLog, /^test/m);
   assert.match(npmLog, /^run test:release/m);
 });
