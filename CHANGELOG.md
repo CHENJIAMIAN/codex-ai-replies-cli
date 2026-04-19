@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.3.0-rc
+## 0.3.0
 
-Release candidate state for the next `0.3.0` release. This worktree updates the repo-facing surface only and does not publish the package.
+Final release for the current development cycle after the repo-facing surface, timeline filtering, rollout selection hardening, and release workflow were completed.
 
 ### Added
 

@@ -4,13 +4,13 @@ Read local Codex session rollouts as a usable CLI transcript.
 
 `codex-ai-replies-cli` scans `~/.codex/sessions`, picks the latest main-agent rollout by default, and turns JSONL session history into readable output. It helps when you want to review what the assistant said, inspect tool-call sequences, or isolate MCP activity without digging through raw rollout files by hand.
 
-## Release Candidate Status
+## Release Status
 
-This worktree is staged as the repo-facing release candidate for `0.3.0`.
+Current package version: `0.3.0`
 
-- Target version: `0.3.0`
-- Publish status: not published from this branch/worktree yet
-- Goal: validate the CLI surface, docs, and pack/release checks before publishing
+- Timeline filtering, rollout selection hardening, and release checks are included
+- `npm test`, `npm run test:release`, and `npm run release:final` are the intended release gates
+- The CLI is ready for normal npm installation and repository-based validation
 
 ## Why Use It
 
@@ -20,12 +20,12 @@ This worktree is staged as the repo-facing release candidate for `0.3.0`.
 - Save a readable transcript to a text file and open it immediately
 - Target a specific session by id or read a rollout file directly
 
-## Install For Evaluation
+## Install
 
-`0.3.0` is not published yet, so install from the repo while validating the release candidate:
+Install from npm:
 
 ```bash
-npm install -g .
+npm install -g codex-ai-replies-cli
 ```
 
 After install, the recommended short command is:
@@ -34,7 +34,7 @@ After install, the recommended short command is:
 cxr
 ```
 
-If you prefer not to install globally, run the entrypoint directly from the clone:
+If you prefer to validate from a clone before or after publishing, run the entrypoint directly:
 
 ```bash
 node bin/codex-ai-replies.js --help
@@ -165,7 +165,10 @@ Use the repo checks that back this release candidate surface:
 ```bash
 npm test
 npm run test:release
+npm run release:final
 ```
+
+`npm run release:final` verifies the worktree is clean, reruns the test gates, and prints the exact next `push/tag/publish` commands without executing them.
 
 ## Typical Use Cases
 
