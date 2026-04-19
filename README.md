@@ -4,6 +4,14 @@ Read local Codex session rollouts as a usable CLI transcript.
 
 `codex-ai-replies-cli` scans `~/.codex/sessions`, picks the latest main-agent rollout by default, and turns JSONL session history into readable output. It helps when you want to review what the assistant said, inspect tool-call sequences, or isolate MCP activity without digging through raw rollout files by hand.
 
+## Release Candidate Status
+
+This worktree is staged as the repo-facing release candidate for `0.3.0`.
+
+- Target version: `0.3.0`
+- Publish status: not published from this branch/worktree yet
+- Goal: validate the CLI surface, docs, and pack/release checks before publishing
+
 ## Why Use It
 
 - Review assistant replies from a recent Codex run
@@ -12,12 +20,12 @@ Read local Codex session rollouts as a usable CLI transcript.
 - Save a readable transcript to a text file and open it immediately
 - Target a specific session by id or read a rollout file directly
 
-## Install
+## Install For Evaluation
 
-Global install is the primary workflow:
+`0.3.0` is not published yet, so install from the repo while validating the release candidate:
 
 ```bash
-npm install -g codex-ai-replies-cli
+npm install -g .
 ```
 
 After install, the recommended short command is:
@@ -26,10 +34,10 @@ After install, the recommended short command is:
 cxr
 ```
 
-If you prefer not to install globally, you can also run it with `npx`:
+If you prefer not to install globally, run the entrypoint directly from the clone:
 
 ```bash
-npx codex-ai-replies-cli --help
+node bin/codex-ai-replies.js --help
 ```
 
 ## Quick Start
@@ -149,6 +157,15 @@ cxr --sessions-root ./fixtures/sessions --include-tools
 - Malformed rollout JSONL is treated as an error, with exact file and line reporting
 - Assistant extraction prefers `event_msg.agent_message` and falls back to assistant `response_item` text when needed
 - `--count` is applied after category filtering, so targeted extracts stay accurate
+
+## Release Checks
+
+Use the repo checks that back this release candidate surface:
+
+```bash
+npm test
+npm run test:release
+```
 
 ## Typical Use Cases
 
