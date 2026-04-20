@@ -1,6 +1,6 @@
 {
   "name": "codex-ai-replies-cli",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "CLI for reading local Codex session rollouts and extracting assistant replies, tool calls, and MCP activity",
   "keywords": [
     "codex",

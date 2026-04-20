@@ -6,7 +6,7 @@ Read local Codex session rollouts as a usable CLI transcript.
 
 ## Release Status
 
-Current package version: `0.3.0`
+Current package version: `0.4.0`
 
 - Timeline filtering, rollout selection hardening, and release checks are included
 - `npm test`, `npm run test:release`, and `npm run release:final` are the intended release gates
@@ -66,6 +66,12 @@ Read only MCP activity:
 cxr --include-mcp
 ```
 
+Read only `chrome-devtools evaluate_script` MCP activity:
+
+```bash
+cxr --only mcp --mcp-server chrome-devtools --mcp-tool evaluate_script
+```
+
 Save the latest extracted items and open the output file:
 
 ```bash
@@ -90,6 +96,8 @@ By default, `cxr` prints assistant replies only. Timeline-related flags switch i
 - `--include-mcp` selects MCP events
 - `--include-tools --include-mcp` returns the full mixed timeline with assistant, tool, and MCP events together
 - `--only assistant|tools|mcp` forces a single category
+- `--mcp-server <name>` filters selected MCP events by server name
+- `--mcp-tool <name>` filters selected MCP events by tool name
 - `--timeline` keeps selected events in timestamp order, and becomes optional once include flags are present
 
 Formatted output uses a readable block layout:
@@ -105,6 +113,8 @@ arguments:
   "verbose": false
 }
 ```
+
+In default text mode, multiline MCP string arguments are rendered as readable text blocks instead of escaped JSON string literals. Use `--compact-arguments` if you want the old one-line JSON style.
 
 Use `--json` if you want machine-friendly output instead.
 
@@ -147,6 +157,8 @@ cxr --sessions-root ./fixtures/sessions --include-tools
 - `--include-mcp`: select MCP events
 - `--timeline`: render selected events in timestamp order
 - `--only <kind>`: select exactly one category: `assistant`, `tools`, or `mcp`
+- `--mcp-server <name>`: filter selected MCP events by server name
+- `--mcp-tool <name>`: filter selected MCP events by tool name
 - `--compact-arguments`: render MCP arguments as one-line JSON instead of formatted blocks
 - `--sessions-root <path>`: override the default sessions root
 - `--help`: show help

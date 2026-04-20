@@ -21,6 +21,8 @@ Options:
   --include-mcp          select MCP events
   --timeline             render selected events in timeline order
   --only <kind>          with timeline output, keep only assistant, tools, or mcp events
+  --mcp-server <name>    filter selected MCP events by MCP server name
+  --mcp-tool <name>      filter selected MCP events by MCP tool name
   --compact-arguments    render MCP arguments as one-line JSON
   --sessions-root <path> override the default sessions root
   --help                 show this help
@@ -46,6 +48,8 @@ function parseArgs(argv) {
     timeline: false,
     only: null,
     compactArguments: false,
+    mcpServer: null,
+    mcpTool: null,
     sessionsRoot: path.join(os.homedir(), ".codex", "sessions"),
     outputPath: null,
     rawFile: null,
@@ -107,6 +111,12 @@ function parseArgs(argv) {
       case "--compact-arguments":
         options.compactArguments = true;
         break;
+      case "--mcp-server":
+        options.mcpServer = argv[++i];
+        break;
+      case "--mcp-tool":
+        options.mcpTool = argv[++i];
+        break;
       case "--sessions-root":
         options.sessionsRoot = argv[++i];
         break;
@@ -127,6 +137,11 @@ function parseArgs(argv) {
       throw new Error("--only cannot be combined with --include-tools or --include-mcp");
     }
     options.timeline = true;
+  }
+
+  const selectsMcp = options.only === "mcp" || options.includeMcp;
+  if ((options.mcpServer || options.mcpTool) && !selectsMcp) {
+    throw new Error("--mcp-server and --mcp-tool require MCP events to be selected");
   }
 
   return options;

@@ -309,6 +309,50 @@ test("renders compact arguments when --compact-arguments is provided", () => {
   assert.doesNotMatch(result.stdout, /arguments:\n\{/);
 });
 
+test("renders multiline MCP argument strings as readable text blocks in default output", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "20", "rollout-2026-04-20T10-00-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-04-20T10:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({
+      timestamp: "2026-04-20T10:00:01Z",
+      type: "event_msg",
+      payload: {
+        type: "mcp_tool_call_end",
+        server: "chrome-devtools",
+        tool: "evaluate_script",
+        invocation: {
+          server: "chrome-devtools",
+          tool: "evaluate_script",
+          arguments: {
+            function: "() => {\n  return 'ok';\n}",
+            selector: ".el-switch__input"
+          }
+        }
+      }
+    })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--only",
+    "mcp"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /"function": \|/);
+  assert.match(result.stdout, /  \(\) => \{/);
+  assert.match(result.stdout, /    return 'ok';/);
+  assert.match(result.stdout, /"selector": "\.el-switch__input"/);
+  assert.doesNotMatch(result.stdout, /\\n/);
+});
+
 test("extracts only MCP events without requiring --timeline", () => {
   const tempDir = makeTempDir();
   const sessionsRoot = path.join(tempDir, "sessions");
@@ -346,6 +390,106 @@ test("extracts only MCP events without requiring --timeline", () => {
   assert.doesNotMatch(result.stdout, /assistant before/);
   assert.doesNotMatch(result.stdout, /assistant after/);
   assert.doesNotMatch(result.stdout, /\[tool_call\] read_file/);
+});
+
+test("filters MCP events by server and tool together", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "20", "rollout-2026-04-20T11-00-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-04-20T11:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({
+      timestamp: "2026-04-20T11:00:01Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_end", server: "chrome-devtools", tool: "evaluate_script", invocation: { server: "chrome-devtools", tool: "evaluate_script", arguments: { function: "() => true" } } }
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-20T11:00:02Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_end", server: "chrome-devtools", tool: "take_snapshot", invocation: { server: "chrome-devtools", tool: "take_snapshot", arguments: { verbose: false } } }
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-20T11:00:03Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_end", server: "deepwiki", tool: "ask_question", invocation: { server: "deepwiki", tool: "ask_question", arguments: { q: "types" } } }
+    })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--only",
+    "mcp",
+    "--mcp-server",
+    "chrome-devtools",
+    "--mcp-tool",
+    "evaluate_script"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /\[mcp_tool_call_end\] chrome-devtools evaluate_script/);
+  assert.doesNotMatch(result.stdout, /take_snapshot/);
+  assert.doesNotMatch(result.stdout, /deepwiki/);
+});
+
+test("filters MCP events by tool only", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "20", "rollout-2026-04-20T12-00-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-04-20T12:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({
+      timestamp: "2026-04-20T12:00:01Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_begin", server: "chrome-devtools", tool: "evaluate_script", invocation: { server: "chrome-devtools", tool: "evaluate_script", arguments: { function: "() => 1" } } }
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-20T12:00:02Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_begin", server: "other-server", tool: "evaluate_script", invocation: { server: "other-server", tool: "evaluate_script", arguments: { function: "() => 2" } } }
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-20T12:00:03Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_begin", server: "chrome-devtools", tool: "take_snapshot", invocation: { server: "chrome-devtools", tool: "take_snapshot", arguments: { verbose: false } } }
+    })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--only",
+    "mcp",
+    "--mcp-tool",
+    "evaluate_script"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /chrome-devtools evaluate_script/);
+  assert.match(result.stdout, /other-server evaluate_script/);
+  assert.doesNotMatch(result.stdout, /take_snapshot/);
+});
+
+test("fails when MCP-specific filters are used without selecting MCP events", () => {
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--mcp-server",
+    "chrome-devtools"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stderr, /--mcp-server and --mcp-tool require MCP events to be selected/);
 });
 
 test("applies --count after filtering selected categories on a mixed timeline", () => {

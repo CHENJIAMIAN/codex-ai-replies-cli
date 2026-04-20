@@ -215,6 +215,25 @@ function getTimelineKinds(options = {}) {
   return new Set(["assistant"]);
 }
 
+function matchesMcpFilter(entry, options = {}) {
+  if (!options.mcpServer && !options.mcpTool) {
+    return true;
+  }
+
+  const server = String(entry.payload?.invocation?.server ?? entry.payload?.server ?? "").trim();
+  const tool = String(entry.payload?.invocation?.tool ?? entry.payload?.tool ?? "").trim();
+
+  if (options.mcpServer && server !== options.mcpServer) {
+    return false;
+  }
+
+  if (options.mcpTool && tool !== options.mcpTool) {
+    return false;
+  }
+
+  return true;
+}
+
 export function extractTimeline(entries, options = {}) {
   const items = [];
   const allowedKinds = getTimelineKinds(options);
@@ -263,7 +282,7 @@ export function extractTimeline(entries, options = {}) {
       && entry.type === "event_msg"
     ) {
       const payloadType = String(entry.payload?.type ?? "");
-      if (payloadType === "mcp_tool_call_begin" && allowedKinds.has("mcp_tool_call_begin")) {
+      if (payloadType === "mcp_tool_call_begin" && allowedKinds.has("mcp_tool_call_begin") && matchesMcpFilter(entry, options)) {
         const server = String(entry.payload?.invocation?.server ?? entry.payload?.server ?? "").trim();
         const tool = String(entry.payload?.invocation?.tool ?? entry.payload?.tool ?? "").trim();
         items.push({
@@ -275,7 +294,7 @@ export function extractTimeline(entries, options = {}) {
         continue;
       }
 
-      if (payloadType === "mcp_tool_call_end" && allowedKinds.has("mcp_tool_call_end")) {
+      if (payloadType === "mcp_tool_call_end" && allowedKinds.has("mcp_tool_call_end") && matchesMcpFilter(entry, options)) {
         const server = String(entry.payload?.invocation?.server ?? entry.payload?.server ?? "").trim();
         const tool = String(entry.payload?.invocation?.tool ?? entry.payload?.tool ?? "").trim();
         items.push({
@@ -322,6 +341,63 @@ export function extractTimeline(entries, options = {}) {
   return items;
 }
 
+function isMultilineString(value) {
+  return typeof value === "string" && /[\r\n]/.test(value);
+}
+
+function formatScalarInline(value) {
+  return typeof value === "string" ? JSON.stringify(value) : JSON.stringify(value);
+}
+
+function formatReadableValue(value, indentLevel = 0) {
+  const indent = "  ".repeat(indentLevel);
+  const childIndent = "  ".repeat(indentLevel + 1);
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return [`${indent}[]`];
+    }
+
+    const lines = [`${indent}[`];
+    for (const item of value) {
+      if (isMultilineString(item)) {
+        lines.push(`${childIndent}|`);
+        lines.push(...String(item).replace(/\r\n/g, "\n").split("\n").map((line) => `${"  ".repeat(indentLevel + 2)}${line}`));
+      } else {
+        lines.push(...formatReadableValue(item, indentLevel + 1));
+      }
+    }
+    lines.push(`${indent}]`);
+    return lines;
+  }
+
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value);
+    if (entries.length === 0) {
+      return [`${indent}{}`];
+    }
+
+    const lines = [`${indent}{`];
+    for (const [key, entryValue] of entries) {
+      const keyLabel = `${childIndent}${JSON.stringify(key)}:`;
+      if (isMultilineString(entryValue)) {
+        lines.push(`${keyLabel} |`);
+        lines.push(...String(entryValue).replace(/\r\n/g, "\n").split("\n").map((line) => `${"  ".repeat(indentLevel + 2)}${line}`));
+      } else if (entryValue !== null && typeof entryValue === "object") {
+        const rendered = formatReadableValue(entryValue, indentLevel + 1);
+        lines.push(`${keyLabel} ${rendered[0].trimStart()}`);
+        lines.push(...rendered.slice(1));
+      } else {
+        lines.push(`${keyLabel} ${formatScalarInline(entryValue)}`);
+      }
+    }
+    lines.push(`${indent}}`);
+    return lines;
+  }
+
+  return [`${indent}${formatScalarInline(value)}`];
+}
+
 export function formatMessages(messages, options = {}) {
   return messages
     .map((message, index) => {
@@ -340,7 +416,7 @@ export function formatMessages(messages, options = {}) {
           bodyLines.push("");
           if (!options.compactArguments && normalizedArguments !== null && typeof normalizedArguments === "object") {
             bodyLines.push("arguments:");
-            bodyLines.push(...JSON.stringify(normalizedArguments, null, 2).split("\n"));
+            bodyLines.push(...formatReadableValue(normalizedArguments));
           } else {
             bodyLines.push(`arguments: ${JSON.stringify(normalizedArguments)}`);
           }
