@@ -15,13 +15,20 @@ function walkRollouts(rootDir) {
       if (entry.isDirectory()) {
         stack.push(fullPath);
       } else if (entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl")) {
-        results.push(fullPath);
+        const stats = fs.statSync(fullPath);
+        results.push({ filePath: fullPath, mtimeMs: stats.mtimeMs });
       }
     }
   }
 
-  results.sort().reverse();
-  return results;
+  results.sort((left, right) => {
+    const mtimeDifference = right.mtimeMs - left.mtimeMs;
+    if (mtimeDifference !== 0) {
+      return mtimeDifference;
+    }
+    return right.filePath.localeCompare(left.filePath);
+  });
+  return results.map((result) => result.filePath);
 }
 
 function formatParseFailure(filePath, lineNumber, cause) {
@@ -155,6 +162,15 @@ export function extractMessages(entries) {
   return extractAssistantItems(entries);
 }
 
+export function extractAllItems(entries) {
+  return entries.map((entry) => ({
+    kind: "raw",
+    timestamp: String(entry.timestamp ?? ""),
+    message: `type: ${String(entry.type ?? "")}`.trim(),
+    details: entry
+  }));
+}
+
 function extractAssistantItems(entries) {
   const eventMessages = entries
     .filter((entry) => entry.type === "event_msg" && entry.payload?.type === "agent_message" && entry.payload?.message)
@@ -194,25 +210,106 @@ function getTimelineKinds(options = {}) {
     return new Set(["mcp_tool_call_begin", "mcp_tool_call_end"]);
   }
 
-  if (options.includeTools && options.includeMcp) {
-    return new Set([
-      "assistant",
-      "tool_call",
-      "tool_output",
-      "mcp_tool_call_begin",
-      "mcp_tool_call_end"
-    ]);
+  if (options.only === "user-input") {
+    return new Set(["user_input"]);
   }
 
+  if (options.only === "all") {
+    return new Set(["all"]);
+  }
+
+  const selectedIncludeKinds = [];
   if (options.includeTools) {
-    return new Set(["tool_call", "tool_output"]);
+    selectedIncludeKinds.push("tools");
   }
 
   if (options.includeMcp) {
-    return new Set(["mcp_tool_call_begin", "mcp_tool_call_end"]);
+    selectedIncludeKinds.push("mcp");
   }
 
-  return new Set(["assistant"]);
+  if (options.includeUserInput) {
+    selectedIncludeKinds.push("user_input");
+  }
+
+  if (selectedIncludeKinds.length === 0) {
+    return new Set(["assistant"]);
+  }
+
+  const kinds = new Set();
+  if (selectedIncludeKinds.length > 1) {
+    kinds.add("assistant");
+  }
+
+  if (options.includeTools) {
+    kinds.add("tool_call");
+    kinds.add("tool_output");
+  }
+
+  if (options.includeMcp) {
+    kinds.add("mcp_tool_call_begin");
+    kinds.add("mcp_tool_call_end");
+  }
+
+  if (options.includeUserInput) {
+    kinds.add("user_input");
+  }
+
+  return kinds;
+}
+
+function extractUserInputItem(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const payloadType = String(payload.type ?? "").trim().toLowerCase();
+  if (payloadType === "request_user_input" || payloadType === "requestuserinput") {
+    return {
+      message: "[user_input] request_user_input",
+      details: payload
+    };
+  }
+
+  if (payloadType === "function_call" && String(payload.name ?? "").trim() === "request_user_input") {
+    let normalizedArguments = payload.arguments;
+    if (typeof normalizedArguments === "string") {
+      try {
+        normalizedArguments = JSON.parse(normalizedArguments);
+      } catch {
+        // Keep the original string when it is not valid JSON.
+      }
+    }
+
+    const questions = Array.isArray(normalizedArguments?.questions) ? normalizedArguments.questions : [];
+    const label = questions
+      .map((question) => String(question?.question ?? question?.header ?? "").trim())
+      .filter(Boolean)
+      .join(" | ");
+
+    return {
+      message: label ? `[user_input] ${label}` : "[user_input] request_user_input",
+      details: {
+        ...payload,
+        arguments: normalizedArguments
+      }
+    };
+  }
+
+  if (payloadType === "message" && payload.role === "assistant") {
+    const inputRequest = (payload.content ?? []).find((item) => {
+      const itemType = String(item?.type ?? "").trim().toLowerCase();
+      return itemType === "request_user_input" || itemType === "requestuserinput";
+    });
+
+    if (inputRequest) {
+      return {
+        message: "[user_input] request_user_input",
+        details: inputRequest
+      };
+    }
+  }
+
+  return null;
 }
 
 function matchesMcpFilter(entry, options = {}) {
@@ -308,10 +405,23 @@ export function extractTimeline(entries, options = {}) {
     }
 
     if (
-      (allowedKinds.has("tool_call") || allowedKinds.has("tool_output"))
+      (allowedKinds.has("tool_call") || allowedKinds.has("tool_output") || allowedKinds.has("user_input"))
       && entry.type === "response_item"
     ) {
       const payloadType = String(entry.payload?.type ?? "");
+      if (allowedKinds.has("user_input")) {
+        const userInputItem = extractUserInputItem(entry.payload);
+        if (userInputItem) {
+          items.push({
+            kind: "user_input",
+            timestamp: String(entry.timestamp ?? ""),
+            message: userInputItem.message,
+            details: userInputItem.details
+          });
+          continue;
+        }
+      }
+
       if (payloadType === "function_call" && allowedKinds.has("tool_call")) {
         items.push({
           kind: "tool_call",
@@ -327,6 +437,18 @@ export function extractTimeline(entries, options = {}) {
           kind: "tool_output",
           timestamp: String(entry.timestamp ?? ""),
           message: `[tool_output] ${String(entry.payload.call_id ?? "")}`.trim(),
+          details: entry.payload
+        });
+      }
+    }
+
+    if (allowedKinds.has("user_input") && entry.type === "event_msg") {
+      const payloadType = String(entry.payload?.type ?? "").trim().toLowerCase();
+      if (payloadType === "request_user_input" || payloadType === "requestuserinput") {
+        items.push({
+          kind: "user_input",
+          timestamp: String(entry.timestamp ?? ""),
+          message: "[user_input] request_user_input",
           details: entry.payload
         });
       }
@@ -419,6 +541,22 @@ export function formatMessages(messages, options = {}) {
             bodyLines.push(...formatReadableValue(normalizedArguments));
           } else {
             bodyLines.push(`arguments: ${JSON.stringify(normalizedArguments)}`);
+          }
+        }
+      }
+      if (message.kind === "raw") {
+        bodyLines.push("");
+        bodyLines.push(...formatReadableValue(message.details));
+      }
+      if (message.kind === "user_input") {
+        const argumentsValue = message.details?.arguments ?? message.details?.questions ?? message.details;
+        if (argumentsValue !== undefined) {
+          bodyLines.push("");
+          if (!options.compactArguments && argumentsValue !== null && typeof argumentsValue === "object") {
+            bodyLines.push("arguments:");
+            bodyLines.push(...formatReadableValue(argumentsValue));
+          } else {
+            bodyLines.push(`arguments: ${JSON.stringify(argumentsValue)}`);
           }
         }
       }

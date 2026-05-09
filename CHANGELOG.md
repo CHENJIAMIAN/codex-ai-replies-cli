@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0
+
+Release focused on default session freshness and broader rollout inspection.
+
+### Added
+
+- `--include-user-input` and `--only user-input` for RequestUserInput-style prompt events
+- `--only all` for exporting every raw rollout entry
+
+### Changed
+
+- Default main-agent rollout selection now uses the rollout file update time instead of filename order
+- `--only all` returns the full raw rollout by default instead of applying the normal 100-item cap
+- README examples and command reference now cover user-input and raw rollout export workflows
+
 ## 0.4.0
 
 Release focused on making MCP output easier to inspect when you need one exact server/tool path and when arguments contain multiline script strings.

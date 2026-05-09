@@ -99,6 +99,39 @@ test("prints latest main-agent messages with divider and timestamp", () => {
   assert.match(written, /第二条\n第二行/);
 });
 
+test("selects latest main-agent rollout by file update time", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+  const updatedLaterPath = path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T10-00-00-root.jsonl");
+  const namedLaterPath = path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T11-00-00-root.jsonl");
+
+  writeLines(updatedLaterPath, [
+    JSON.stringify({ timestamp: "2026-04-17T10:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({ timestamp: "2026-04-17T10:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "updated later" } })
+  ]);
+
+  writeLines(namedLaterPath, [
+    JSON.stringify({ timestamp: "2026-04-17T11:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({ timestamp: "2026-04-17T11:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "named later" } })
+  ]);
+
+  fs.utimesSync(updatedLaterPath, new Date("2026-04-17T12:00:00Z"), new Date("2026-04-17T12:00:00Z"));
+  fs.utimesSync(namedLaterPath, new Date("2026-04-17T11:00:00Z"), new Date("2026-04-17T11:00:00Z"));
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /updated later/);
+  assert.doesNotMatch(result.stdout, /named later/);
+});
+
 test("prints help text", () => {
   const result = spawnSync(process.execPath, [cliEntry, "--help"], {
     cwd: repoRoot,
@@ -624,6 +657,164 @@ test("keeps assistant fallback output available in timeline mode", () => {
   assert.match(result.stdout, /assistant fallback text/);
 });
 
+test("extracts request_user_input function calls as user-input events", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "20", "rollout-2026-04-20T13-00-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-04-20T13:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({
+      timestamp: "2026-04-20T13:00:01Z",
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "request_user_input",
+        arguments: JSON.stringify({
+          questions: [
+            {
+              header: "Scope",
+              question: "Choose one",
+              options: [
+                { label: "Quick", description: "Fast path" },
+                { label: "Full", description: "Complete path" }
+              ]
+            }
+          ]
+        })
+      }
+    })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--only",
+    "user-input"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /\[user_input\] Choose one/);
+  assert.match(result.stdout, /"header": "Scope"/);
+  assert.match(result.stdout, /"label": "Quick"/);
+});
+
+test("includes user-input events in mixed timeline selection", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "20", "rollout-2026-04-20T14-00-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-04-20T14:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({ timestamp: "2026-04-20T14:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "assistant before" } }),
+    JSON.stringify({
+      timestamp: "2026-04-20T14:00:02Z",
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "request_user_input",
+        arguments: JSON.stringify({
+          questions: [
+            { header: "Mode", question: "Pick mode", options: [{ label: "A", description: "Option A" }] }
+          ]
+        })
+      }
+    }),
+    JSON.stringify({ timestamp: "2026-04-20T14:00:03Z", type: "response_item", payload: { type: "function_call", name: "read_file", arguments: "{\"path\":\"notes.txt\"}" } })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--include-user-input",
+    "--include-tools"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /assistant before/);
+  assert.match(result.stdout, /\[user_input\] Pick mode/);
+  assert.match(result.stdout, /\[tool_call\] read_file/);
+});
+
+test("exports all rollout entries when --only all is selected", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+  const outputPath = path.join(tempDir, "all-items.txt");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "20", "rollout-2026-04-20T15-00-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-04-20T15:00:00Z", type: "session_meta", payload: { session_source: "cli", id: "all-test" } }),
+    JSON.stringify({ timestamp: "2026-04-20T15:00:01Z", type: "turn_context", payload: { cwd: "D:\\\\Desktop" } }),
+    JSON.stringify({ timestamp: "2026-04-20T15:00:02Z", type: "event_msg", payload: { type: "agent_message", message: "assistant line" } }),
+    JSON.stringify({ timestamp: "2026-04-20T15:00:03Z", type: "response_item", payload: { type: "function_call", name: "read_file", arguments: "{\"path\":\"a.txt\"}" } })
+  ]);
+
+  const { result } = runCli([
+    "--sessions-root",
+    sessionsRoot,
+    "--id",
+    "all-test",
+    "--only",
+    "all",
+    "--save",
+    "--output",
+    outputPath
+  ], { tempDir });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /\[1\] 2026-04-20T15:00:00Z/);
+  assert.match(result.stdout, /type: session_meta/);
+  assert.match(result.stdout, /\[2\] 2026-04-20T15:00:01Z/);
+  assert.match(result.stdout, /type: turn_context/);
+  assert.match(result.stdout, /\[3\] 2026-04-20T15:00:02Z/);
+  assert.match(result.stdout, /type: event_msg/);
+  assert.match(result.stdout, /\[4\] 2026-04-20T15:00:03Z/);
+  assert.match(result.stdout, /type: response_item/);
+
+  const written = fs.readFileSync(outputPath, "utf8");
+  assert.match(written, /"session_source": "cli"/);
+  assert.match(written, /"cwd": "D:\\\\\\\\Desktop"/);
+  assert.match(written, /"name": "read_file"/);
+});
+
+test("exports all entries without the default 100-item cap when --only all is selected", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  const lines = [JSON.stringify({ timestamp: "2026-04-20T16:00:00Z", type: "session_meta", payload: { session_source: "cli", id: "all-no-cap" } })];
+  for (let index = 1; index <= 105; index += 1) {
+    lines.push(JSON.stringify({
+      timestamp: `2026-04-20T16:00:${String(index).padStart(2, "0")}Z`,
+      type: "event_msg",
+      payload: { type: "agent_message", message: `message ${index}` }
+    }));
+  }
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "20", "rollout-2026-04-20T16-00-00-root.jsonl"), lines);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--id",
+    "all-no-cap",
+    "--only",
+    "all"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /\[106\]/);
+  assert.match(result.stdout, /message 105/);
+});
+
 test("fails fast when --only has no value", () => {
   const result = spawnSync(process.execPath, [cliEntry, "--only"], {
     cwd: repoRoot,
@@ -631,7 +822,7 @@ test("fails fast when --only has no value", () => {
   });
 
   assert.notEqual(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
-  assert.match(result.stderr, /--only requires one of: assistant, tools, mcp/);
+  assert.match(result.stderr, /--only requires one of: assistant, tools, mcp, user-input, all/);
 });
 
 test("fails with file and line details when a rollout JSONL line is malformed", () => {

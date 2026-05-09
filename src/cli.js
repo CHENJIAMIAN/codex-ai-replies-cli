@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { defaultOutputPath, extractMessages, extractTimeline, findLatestMainRollout, findRolloutById, formatMessages, readJsonLines } from "./core.js";
+import { defaultOutputPath, extractAllItems, extractMessages, extractTimeline, findLatestMainRollout, findRolloutById, formatMessages, readJsonLines } from "./core.js";
 
 const HELP_TEXT = `codex-ai-replies
 
@@ -19,8 +19,9 @@ Options:
   --json                 print JSON instead of the formatted text view
   --include-tools        select function/tool call events
   --include-mcp          select MCP events
+  --include-user-input   select RequestUserInput-style events
   --timeline             render selected events in timeline order
-  --only <kind>          with timeline output, keep only assistant, tools, or mcp events
+  --only <kind>          with timeline output, keep only assistant, tools, mcp, user-input, or all events
   --mcp-server <name>    filter selected MCP events by MCP server name
   --mcp-tool <name>      filter selected MCP events by MCP tool name
   --compact-arguments    render MCP arguments as one-line JSON
@@ -29,7 +30,7 @@ Options:
   --version              show package version
 `;
 
-const TIMELINE_FILTER_VALUES = new Set(["assistant", "tools", "mcp"]);
+const TIMELINE_FILTER_VALUES = new Set(["assistant", "tools", "mcp", "user-input", "all"]);
 
 function readPackageVersion() {
   const packageJsonPath = new URL("../package.json", import.meta.url);
@@ -40,11 +41,13 @@ function readPackageVersion() {
 function parseArgs(argv) {
   const options = {
     count: 100,
+    countProvided: false,
     save: false,
     open: false,
     json: false,
     includeTools: false,
     includeMcp: false,
+    includeUserInput: false,
     timeline: false,
     only: null,
     compactArguments: false,
@@ -69,6 +72,7 @@ function parseArgs(argv) {
         break;
       case "--count":
         options.count = Number.parseInt(argv[++i], 10);
+        options.countProvided = true;
         break;
       case "--save":
         options.save = true;
@@ -96,13 +100,16 @@ function parseArgs(argv) {
       case "--include-mcp":
         options.includeMcp = true;
         break;
+      case "--include-user-input":
+        options.includeUserInput = true;
+        break;
       case "--timeline":
         options.timeline = true;
         break;
       case "--only": {
         const onlyValue = argv[i + 1];
         if (!onlyValue || onlyValue.startsWith("--")) {
-          throw new Error("--only requires one of: assistant, tools, mcp");
+          throw new Error("--only requires one of: assistant, tools, mcp, user-input, all");
         }
         options.only = String(onlyValue).trim().toLowerCase();
         i += 1;
@@ -131,10 +138,10 @@ function parseArgs(argv) {
 
   if (options.only) {
     if (!TIMELINE_FILTER_VALUES.has(options.only)) {
-      throw new Error("--only must be one of: assistant, tools, mcp");
+      throw new Error("--only must be one of: assistant, tools, mcp, user-input, all");
     }
-    if (options.includeTools || options.includeMcp) {
-      throw new Error("--only cannot be combined with --include-tools or --include-mcp");
+    if (options.includeTools || options.includeMcp || options.includeUserInput) {
+      throw new Error("--only cannot be combined with --include-tools, --include-mcp, or --include-user-input");
     }
     options.timeline = true;
   }
@@ -221,9 +228,11 @@ export async function main(argv) {
 
   const selected = chooseRollout(options);
   const useTimelineOutput = options.timeline || options.includeTools || options.includeMcp || Boolean(options.only);
-  const messages = useTimelineOutput
-    ? extractTimeline(selected.entries, options)
-    : extractMessages(selected.entries);
+  const messages = options.only === "all"
+    ? extractAllItems(selected.entries)
+    : useTimelineOutput
+      ? extractTimeline(selected.entries, options)
+      : extractMessages(selected.entries);
 
   if (messages.length === 0) {
     if (options.only) {
@@ -235,7 +244,9 @@ export async function main(argv) {
     throw new Error(`No assistant messages found in: ${selected.filePath}`);
   }
 
-  const recentMessages = messages.slice(-options.count);
+  const recentMessages = options.only === "all" && !options.countProvided
+    ? messages
+    : messages.slice(-options.count);
   const output = options.json ? JSON.stringify(recentMessages, null, 2) : formatMessages(recentMessages, options);
 
   process.stdout.write(`${output}\n`);

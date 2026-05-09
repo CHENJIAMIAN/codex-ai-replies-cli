@@ -2,11 +2,11 @@
 
 Read local Codex session rollouts as a usable CLI transcript.
 
-`codex-ai-replies-cli` scans `~/.codex/sessions`, picks the latest main-agent rollout by default, and turns JSONL session history into readable output. It helps when you want to review what the assistant said, inspect tool-call sequences, or isolate MCP activity without digging through raw rollout files by hand.
+`codex-ai-replies-cli` scans `~/.codex/sessions`, picks the most recently updated main-agent rollout by default, and turns JSONL session history into readable output. It helps when you want to review what the assistant said, inspect tool-call sequences, or isolate MCP activity without digging through raw rollout files by hand.
 
 ## Release Status
 
-Current package version: `0.4.0`
+Current package version: `0.5.0`
 
 - Timeline filtering, rollout selection hardening, and release checks are included
 - `npm test`, `npm run test:release`, and `npm run release:final` are the intended release gates
@@ -60,6 +60,18 @@ Show a mixed timeline with assistant, tool, and MCP events:
 cxr --include-tools --include-mcp
 ```
 
+Read RequestUserInput prompts:
+
+```bash
+cxr --only user-input
+```
+
+Export every raw rollout entry:
+
+```bash
+cxr --id 019d9bb5-d432-7453-a92c-b3376ef23b58 --only all --save
+```
+
 Read only MCP activity:
 
 ```bash
@@ -81,7 +93,7 @@ cxr --count 20 --save --output ./messages.txt
 ## What The CLI Actually Reads
 
 - Defaults to `~/.codex/sessions`
-- Chooses the latest root/main-agent rollout when no selector is given
+- Chooses the most recently updated root/main-agent rollout when no selector is given
 - Excludes subagent rollouts from the default lookup
 - Accepts `--id` to select a specific session
 - Accepts `--raw-file` to read one rollout JSONL file directly
@@ -94,8 +106,9 @@ By default, `cxr` prints assistant replies only. Timeline-related flags switch i
 
 - `--include-tools` selects tool call and tool output events
 - `--include-mcp` selects MCP events
+- `--include-user-input` selects RequestUserInput-style events
 - `--include-tools --include-mcp` returns the full mixed timeline with assistant, tool, and MCP events together
-- `--only assistant|tools|mcp` forces a single category
+- `--only assistant|tools|mcp|user-input|all` forces a single category
 - `--mcp-server <name>` filters selected MCP events by server name
 - `--mcp-tool <name>` filters selected MCP events by tool name
 - `--timeline` keeps selected events in timestamp order, and becomes optional once include flags are present
@@ -155,8 +168,9 @@ cxr --sessions-root ./fixtures/sessions --include-tools
 - `--json`: print JSON instead of the formatted text view
 - `--include-tools`: select function/tool call events
 - `--include-mcp`: select MCP events
+- `--include-user-input`: select RequestUserInput-style events
 - `--timeline`: render selected events in timestamp order
-- `--only <kind>`: select exactly one category: `assistant`, `tools`, or `mcp`
+- `--only <kind>`: select exactly one category: `assistant`, `tools`, `mcp`, `user-input`, or `all`
 - `--mcp-server <name>`: filter selected MCP events by server name
 - `--mcp-tool <name>`: filter selected MCP events by tool name
 - `--compact-arguments`: render MCP arguments as one-line JSON instead of formatted blocks
