@@ -57,6 +57,22 @@ function waitForFile(filePath, timeoutMs = 2000) {
   return fs.existsSync(filePath);
 }
 
+function formatLocalTimestamp(timestamp) {
+  const parsed = new Date(timestamp);
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  const hour = String(parsed.getHours()).padStart(2, "0");
+  const minute = String(parsed.getMinutes()).padStart(2, "0");
+  const second = String(parsed.getSeconds()).padStart(2, "0");
+  const hasFractionalSeconds = /\.\d+/.test(timestamp);
+  const milliseconds = String(parsed.getMilliseconds()).padStart(3, "0");
+
+  return hasFractionalSeconds
+    ? `${year}-${month}-${day} ${hour}:${minute}:${second}.${milliseconds}`
+    : `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+}
+
 test("prints latest main-agent messages with divider and timestamp", () => {
   const tempDir = makeTempDir();
   const sessionsRoot = path.join(tempDir, "sessions");
@@ -86,17 +102,44 @@ test("prints latest main-agent messages with divider and timestamp", () => {
   ], { tempDir });
 
   assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
-  assert.match(result.stdout, /\[1\] 2026-04-17T10:00:01Z/);
+  assert.match(result.stdout, new RegExp(`\\[1\\] ${formatLocalTimestamp("2026-04-17T10:00:01Z")}`));
   assert.match(result.stdout, /第一条/);
-  assert.match(result.stdout, /\[2\] 2026-04-17T10:00:02Z/);
+  assert.match(result.stdout, new RegExp(`\\[2\\] ${formatLocalTimestamp("2026-04-17T10:00:02Z")}`));
   assert.match(result.stdout, /第二行/);
   assert.doesNotMatch(result.stdout, /SUBAGENT/);
 
   const written = fs.readFileSync(outputPath, "utf8");
   assert.match(written, /^==========/m);
-  assert.match(written, /\[1\] 2026-04-17T10:00:01Z/);
-  assert.match(written, /\[2\] 2026-04-17T10:00:02Z/);
+  assert.match(written, new RegExp(`\\[1\\] ${formatLocalTimestamp("2026-04-17T10:00:01Z")}`));
+  assert.match(written, new RegExp(`\\[2\\] ${formatLocalTimestamp("2026-04-17T10:00:02Z")}`));
   assert.match(written, /第二条\n第二行/);
+});
+
+test("renders rollout timestamps in the local timezone for text output", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "07", "01", "rollout-2026-07-01T12-00-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-07-01T12:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({ timestamp: "2026-07-01T12:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "summer time check" } })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      TZ: "Europe/London"
+    }
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /\[1\] 2026-07-01 13:00:01/);
+  assert.doesNotMatch(result.stdout, /2026-07-01T12:00:01Z/);
 });
 
 test("selects latest main-agent rollout by file update time", () => {
@@ -566,9 +609,9 @@ test("applies --count after filtering selected categories on a mixed timeline", 
   });
 
   assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
-  assert.match(result.stdout, /\[1\] 2026-04-18T10:00:04Z/);
+  assert.match(result.stdout, new RegExp(`\\[1\\] ${formatLocalTimestamp("2026-04-18T10:00:04Z")}`));
   assert.match(result.stdout, /\[mcp_tool_call_begin\] server-2 beta/);
-  assert.match(result.stdout, /\[2\] 2026-04-18T10:00:06Z/);
+  assert.match(result.stdout, new RegExp(`\\[2\\] ${formatLocalTimestamp("2026-04-18T10:00:06Z")}`));
   assert.match(result.stdout, /\[mcp_tool_call_end\] server-2 beta/);
   assert.doesNotMatch(result.stdout, /assistant 4/);
   assert.doesNotMatch(result.stdout, /server-1 alpha/);
@@ -767,13 +810,13 @@ test("exports all rollout entries when --only all is selected", () => {
   ], { tempDir });
 
   assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
-  assert.match(result.stdout, /\[1\] 2026-04-20T15:00:00Z/);
+  assert.match(result.stdout, new RegExp(`\\[1\\] ${formatLocalTimestamp("2026-04-20T15:00:00Z")}`));
   assert.match(result.stdout, /type: session_meta/);
-  assert.match(result.stdout, /\[2\] 2026-04-20T15:00:01Z/);
+  assert.match(result.stdout, new RegExp(`\\[2\\] ${formatLocalTimestamp("2026-04-20T15:00:01Z")}`));
   assert.match(result.stdout, /type: turn_context/);
-  assert.match(result.stdout, /\[3\] 2026-04-20T15:00:02Z/);
+  assert.match(result.stdout, new RegExp(`\\[3\\] ${formatLocalTimestamp("2026-04-20T15:00:02Z")}`));
   assert.match(result.stdout, /type: event_msg/);
-  assert.match(result.stdout, /\[4\] 2026-04-20T15:00:03Z/);
+  assert.match(result.stdout, new RegExp(`\\[4\\] ${formatLocalTimestamp("2026-04-20T15:00:03Z")}`));
   assert.match(result.stdout, /type: response_item/);
 
   const written = fs.readFileSync(outputPath, "utf8");

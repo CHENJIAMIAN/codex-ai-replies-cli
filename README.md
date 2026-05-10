@@ -6,7 +6,7 @@ Read local Codex session rollouts as a usable CLI transcript.
 
 ## Release Status
 
-Current package version: `0.5.0`
+Current package version: `0.5.1`
 
 - Timeline filtering, rollout selection hardening, and release checks are included
 - `npm test`, `npm run test:release`, and `npm run release:final` are the intended release gates
@@ -117,7 +117,7 @@ Formatted output uses a readable block layout:
 
 ```txt
 ==========
-[1] 2026-04-17T13:57:47.361Z
+[1] 2026-04-17 21:57:47.361
 
 [mcp_tool_call_end] chrome-devtools take_snapshot
 
@@ -126,6 +126,8 @@ arguments:
   "verbose": false
 }
 ```
+
+Text-mode timestamps are shown in the runtime's local timezone for easier reading. Use `--json` if you need the original raw rollout timestamps unchanged.
 
 In default text mode, multiline MCP string arguments are rendered as readable text blocks instead of escaped JSON string literals. Use `--compact-arguments` if you want the old one-line JSON style.
 

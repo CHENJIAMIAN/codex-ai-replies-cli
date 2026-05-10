@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.1
+
+Release focused on fixing hour offsets in human-readable timestamp output.
+
+### Fixed
+
+- Text-mode output now renders rollout timestamps in the runtime's local timezone instead of echoing raw UTC strings
+- Summer-time and other DST-sensitive environments no longer show one-hour timestamp drift in the readable transcript view
+
+### Changed
+
+- README now documents that text output is localized while `--json` preserves raw rollout timestamps
+
 ## 0.5.0
 
 Release focused on default session freshness and broader rollout inspection.

@@ -520,6 +520,31 @@ function formatReadableValue(value, indentLevel = 0) {
   return [`${indent}${formatScalarInline(value)}`];
 }
 
+function formatDisplayTimestamp(timestamp) {
+  const value = String(timestamp ?? "").trim();
+  if (!value) {
+    return value;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  const hour = String(parsed.getHours()).padStart(2, "0");
+  const minute = String(parsed.getMinutes()).padStart(2, "0");
+  const second = String(parsed.getSeconds()).padStart(2, "0");
+  const hasFractionalSeconds = /\.\d+/.test(value);
+  const milliseconds = String(parsed.getMilliseconds()).padStart(3, "0");
+
+  return hasFractionalSeconds
+    ? `${year}-${month}-${day} ${hour}:${minute}:${second}.${milliseconds}`
+    : `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+}
+
 export function formatMessages(messages, options = {}) {
   return messages
     .map((message, index) => {
@@ -563,7 +588,7 @@ export function formatMessages(messages, options = {}) {
 
       const lines = [
         "==========",
-        `[${index + 1}] ${message.timestamp}`,
+        `[${index + 1}] ${formatDisplayTimestamp(message.timestamp)}`,
         "",
         ...bodyLines
       ];
