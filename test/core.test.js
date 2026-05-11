@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const cliEntry = path.join(repoRoot, "bin", "codex-ai-replies.js");
@@ -55,6 +55,26 @@ function waitForFile(filePath, timeoutMs = 2000) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
   }
   return fs.existsSync(filePath);
+}
+
+async function waitForText(getText, expectedText, timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (getText().includes(expectedText)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  throw new Error(`Timed out waiting for text: ${expectedText}\nCurrent output:\n${getText()}`);
+}
+
+function waitForExit(child) {
+  if (child.exitCode !== null || child.killed) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => child.once("exit", resolve));
 }
 
 function formatLocalTimestamp(timestamp) {
@@ -113,6 +133,64 @@ test("prints latest main-agent messages with divider and timestamp", () => {
   assert.match(written, new RegExp(`\\[1\\] ${formatLocalTimestamp("2026-04-17T10:00:01Z")}`));
   assert.match(written, new RegExp(`\\[2\\] ${formatLocalTimestamp("2026-04-17T10:00:02Z")}`));
   assert.match(written, /第二条\n第二行/);
+});
+
+test("streams appended rollout messages in --watch mode after printing the latest count", async () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+  const rolloutPath = path.join(sessionsRoot, "2026", "04", "21", "rollout-2026-04-21T10-00-00-root.jsonl");
+
+  writeLines(rolloutPath, [
+    JSON.stringify({ timestamp: "2026-04-21T10:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({ timestamp: "2026-04-21T10:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "message 1" } }),
+    JSON.stringify({ timestamp: "2026-04-21T10:00:02Z", type: "event_msg", payload: { type: "agent_message", message: "message 2" } }),
+    JSON.stringify({ timestamp: "2026-04-21T10:00:03Z", type: "event_msg", payload: { type: "agent_message", message: "message 3" } })
+  ]);
+
+  const child = spawn(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--watch",
+    "--count",
+    "2"
+  ], {
+    cwd: repoRoot,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+
+  try {
+    await waitForText(() => stdout, "message 3");
+    assert.match(stdout, /message 2/);
+    assert.match(stdout, /message 3/);
+    assert.doesNotMatch(stdout, /message 1/);
+
+    fs.appendFileSync(rolloutPath, `${JSON.stringify({
+      timestamp: "2026-04-21T10:00:04Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "message 4" }
+    })}\n`, "utf8");
+
+    await waitForText(() => stdout, "message 4");
+    assert.match(stdout, /message 4/);
+    assert.equal(stderr, "", `stderr=${stderr}`);
+  } finally {
+    if (!child.killed) {
+      child.kill();
+    }
+    await waitForExit(child);
+  }
 });
 
 test("renders rollout timestamps in the local timezone for text output", () => {
@@ -856,6 +934,51 @@ test("exports all entries without the default 100-item cap when --only all is se
   assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
   assert.match(result.stdout, /\[106\]/);
   assert.match(result.stdout, /message 105/);
+});
+
+test("watch mode keeps the default 100-item initial cap before streaming new items", async () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+  const rolloutPath = path.join(sessionsRoot, "2026", "04", "21", "rollout-2026-04-21T11-00-00-root.jsonl");
+
+  const lines = [JSON.stringify({ timestamp: "2026-04-21T11:00:00Z", type: "session_meta", payload: { session_source: "cli" } })];
+  for (let index = 1; index <= 105; index += 1) {
+    lines.push(JSON.stringify({
+      timestamp: `2026-04-21T11:00:${String(index).padStart(2, "0")}Z`,
+      type: "event_msg",
+      payload: { type: "agent_message", message: `message ${index}` }
+    }));
+  }
+
+  writeLines(rolloutPath, lines);
+
+  const child = spawn(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--watch"
+  ], {
+    cwd: repoRoot,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  let stdout = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+
+  try {
+    await waitForText(() => stdout, "message 105");
+    assert.doesNotMatch(stdout, /\nmessage 5\n/);
+    assert.match(stdout, /\nmessage 6\n/);
+    assert.match(stdout, /\nmessage 105\n/);
+  } finally {
+    if (!child.killed) {
+      child.kill();
+    }
+    await waitForExit(child);
+  }
 });
 
 test("fails fast when --only has no value", () => {

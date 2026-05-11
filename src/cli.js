@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { defaultOutputPath, extractAllItems, extractMessages, extractTimeline, findLatestMainRollout, findRolloutById, formatMessages, readJsonLines } from "./core.js";
+import { defaultOutputPath, extractSelectedItems, findLatestMainRollout, findRolloutById, formatMessages, readJsonLines, usesTimelineOutput, watchRollout } from "./core.js";
 
 const HELP_TEXT = `codex-ai-replies
 
@@ -11,6 +11,7 @@ Usage:
 
 Options:
   --count <n>            limit to the latest n messages, default 100
+  --watch                keep streaming newly appended rollout items after the initial output
   --save                 write the extracted messages to a text file and open with VS Code when available
   --open                 legacy alias for opening the saved output
   --output <path>        explicit output path
@@ -42,6 +43,7 @@ function parseArgs(argv) {
   const options = {
     count: 100,
     countProvided: false,
+    watch: false,
     save: false,
     open: false,
     json: false,
@@ -73,6 +75,9 @@ function parseArgs(argv) {
       case "--count":
         options.count = Number.parseInt(argv[++i], 10);
         options.countProvided = true;
+        break;
+      case "--watch":
+        options.watch = true;
         break;
       case "--save":
         options.save = true;
@@ -227,18 +232,14 @@ export async function main(argv) {
   }
 
   const selected = chooseRollout(options);
-  const useTimelineOutput = options.timeline || options.includeTools || options.includeMcp || Boolean(options.only);
-  const messages = options.only === "all"
-    ? extractAllItems(selected.entries)
-    : useTimelineOutput
-      ? extractTimeline(selected.entries, options)
-      : extractMessages(selected.entries);
+  const useTimelineSelection = usesTimelineOutput(options);
+  const messages = extractSelectedItems(selected.entries, options);
 
   if (messages.length === 0) {
     if (options.only) {
       throw new Error(`No ${options.only} timeline events found in: ${selected.filePath}`);
     }
-    if (useTimelineOutput) {
+    if (useTimelineSelection) {
       throw new Error(`No timeline events found in: ${selected.filePath}`);
     }
     throw new Error(`No assistant messages found in: ${selected.filePath}`);
@@ -257,5 +258,12 @@ export async function main(argv) {
     fs.writeFileSync(outputPath, `${output}\n`, "utf8");
     process.stderr.write(`Saved: ${outputPath}\n`);
     maybeOpen(outputPath);
+  }
+
+  if (options.watch) {
+    await watchRollout(selected.filePath, selected.entries, options, async (newItems) => {
+      const watchOutput = options.json ? JSON.stringify(newItems, null, 2) : formatMessages(newItems, options);
+      process.stdout.write(`${watchOutput}\n`);
+    });
   }
 }

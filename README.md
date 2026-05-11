@@ -48,6 +48,18 @@ Show assistant replies from the latest main-agent session:
 cxr
 ```
 
+Keep following the same rollout as new items arrive:
+
+```bash
+cxr --watch
+```
+
+Start by showing the latest 20 items, then continue streaming new ones:
+
+```bash
+cxr --watch --count 20
+```
+
 Read a specific session by id:
 
 ```bash
@@ -133,6 +145,8 @@ In default text mode, multiline MCP string arguments are rendered as readable te
 
 Use `--json` if you want machine-friendly output instead.
 
+`--watch` keeps the default initial extraction rules, then streams newly appended items from the same rollout file. It does not switch to a different newer session while running.
+
 ## Examples
 
 Read only tool calls and tool outputs:
@@ -162,6 +176,7 @@ cxr --sessions-root ./fixtures/sessions --include-tools
 ## Command Reference
 
 - `--count <n>`: limit to the latest `n` extracted items after category filtering, default `100`
+- `--watch`: keep streaming newly appended rollout items after printing the initial selection
 - `--save`: write the extracted output to a text file and open it automatically
 - `--open`: legacy alias for saving and opening the output file
 - `--output <path>`: explicit output path

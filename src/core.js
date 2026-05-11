@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 function walkRollouts(rootDir) {
   const results = [];
@@ -169,6 +170,28 @@ export function extractAllItems(entries) {
     message: `type: ${String(entry.type ?? "")}`.trim(),
     details: entry
   }));
+}
+
+export function usesTimelineOutput(options = {}) {
+  return Boolean(
+    options.timeline
+    || options.includeTools
+    || options.includeMcp
+    || options.includeUserInput
+    || options.only
+  );
+}
+
+export function extractSelectedItems(entries, options = {}) {
+  if (options.only === "all") {
+    return extractAllItems(entries);
+  }
+
+  if (usesTimelineOutput(options)) {
+    return extractTimeline(entries, options);
+  }
+
+  return extractMessages(entries);
 }
 
 function extractAssistantItems(entries) {
@@ -595,6 +618,74 @@ export function formatMessages(messages, options = {}) {
       return lines.join("\n");
     })
     .join("\n\n");
+}
+
+export async function watchRollout(filePath, initialEntries, options = {}, onItems) {
+  const allEntries = [...initialEntries];
+  let emittedItemCount = extractSelectedItems(allEntries, options).length;
+  let readOffset = fs.statSync(filePath).size;
+  let pendingText = "";
+  let nextLineNumber = fs.readFileSync(filePath, "utf8").split(/\r?\n/).length;
+
+  while (true) {
+    await delay(100);
+
+    const stats = fs.statSync(filePath);
+    if (stats.size < readOffset) {
+      readOffset = stats.size;
+      pendingText = "";
+      nextLineNumber = fs.readFileSync(filePath, "utf8").split(/\r?\n/).length;
+      continue;
+    }
+
+    if (stats.size === readOffset) {
+      continue;
+    }
+
+    const chunkSize = stats.size - readOffset;
+    const buffer = Buffer.alloc(chunkSize);
+    const fileDescriptor = fs.openSync(filePath, "r");
+    try {
+      fs.readSync(fileDescriptor, buffer, 0, chunkSize, readOffset);
+    } finally {
+      fs.closeSync(fileDescriptor);
+    }
+
+    readOffset = stats.size;
+    pendingText += buffer.toString("utf8");
+
+    const lines = pendingText.split(/\r?\n/);
+    pendingText = lines.pop() ?? "";
+
+    let appendedEntries = 0;
+    for (const line of lines) {
+      const currentLineNumber = nextLineNumber;
+      nextLineNumber += 1;
+
+      if (!line) {
+        continue;
+      }
+
+      try {
+        allEntries.push(JSON.parse(line));
+        appendedEntries += 1;
+      } catch (error) {
+        throw new Error(formatParseFailure(filePath, currentLineNumber, error), { cause: error });
+      }
+    }
+
+    if (appendedEntries === 0) {
+      continue;
+    }
+
+    const selectedItems = extractSelectedItems(allEntries, options);
+    const newItems = selectedItems.slice(emittedItemCount);
+    emittedItemCount = selectedItems.length;
+
+    if (newItems.length > 0) {
+      await onItems(newItems);
+    }
+  }
 }
 
 export function defaultOutputPath() {
