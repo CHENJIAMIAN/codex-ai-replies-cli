@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0
+
+Release focused on real-time transcript following for active Codex sessions.
+
+### Added
+
+- `--watch` mode to print the latest filtered items first and then continue streaming newly appended rollout content from the same session
+- README quick-start examples for real-time follow workflows
+
+### Fixed
+
+- Watch-mode block numbering now continues from the initial output instead of restarting at `[1]` for each appended chunk
+
 ## 0.5.1
 
 Release focused on fixing hour offsets in human-readable timestamp output.
