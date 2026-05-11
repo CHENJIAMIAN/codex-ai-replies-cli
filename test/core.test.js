@@ -172,6 +172,8 @@ test("streams appended rollout messages in --watch mode after printing the lates
 
   try {
     await waitForText(() => stdout, "message 3");
+    assert.match(stdout, /\[1\][\s\S]*message 2/);
+    assert.match(stdout, /\[2\][\s\S]*message 3/);
     assert.match(stdout, /message 2/);
     assert.match(stdout, /message 3/);
     assert.doesNotMatch(stdout, /message 1/);
@@ -183,7 +185,17 @@ test("streams appended rollout messages in --watch mode after printing the lates
     })}\n`, "utf8");
 
     await waitForText(() => stdout, "message 4");
+    assert.match(stdout, /\[3\][\s\S]*message 4/);
     assert.match(stdout, /message 4/);
+
+    fs.appendFileSync(rolloutPath, `${JSON.stringify({
+      timestamp: "2026-04-21T10:00:05Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "message 5" }
+    })}\n`, "utf8");
+
+    await waitForText(() => stdout, "message 5");
+    assert.match(stdout, /\[4\][\s\S]*message 5/);
     assert.equal(stderr, "", `stderr=${stderr}`);
   } finally {
     if (!child.killed) {

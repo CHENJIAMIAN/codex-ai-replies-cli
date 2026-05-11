@@ -569,6 +569,7 @@ function formatDisplayTimestamp(timestamp) {
 }
 
 export function formatMessages(messages, options = {}) {
+  const startingIndex = Number.isInteger(options.startingIndex) ? options.startingIndex : 0;
   return messages
     .map((message, index) => {
       const bodyLines = String(message.message).replace(/\r\n/g, "\n").split("\n");
@@ -611,7 +612,7 @@ export function formatMessages(messages, options = {}) {
 
       const lines = [
         "==========",
-        `[${index + 1}] ${formatDisplayTimestamp(message.timestamp)}`,
+        `[${startingIndex + index + 1}] ${formatDisplayTimestamp(message.timestamp)}`,
         "",
         ...bodyLines
       ];

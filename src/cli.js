@@ -261,8 +261,15 @@ export async function main(argv) {
   }
 
   if (options.watch) {
+    let printedCount = recentMessages.length;
     await watchRollout(selected.filePath, selected.entries, options, async (newItems) => {
-      const watchOutput = options.json ? JSON.stringify(newItems, null, 2) : formatMessages(newItems, options);
+      const watchOutput = options.json
+        ? JSON.stringify(newItems, null, 2)
+        : formatMessages(newItems, {
+          ...options,
+          startingIndex: printedCount
+        });
+      printedCount += newItems.length;
       process.stdout.write(`${watchOutput}\n`);
     });
   }
