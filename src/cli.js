@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { defaultOutputPath, extractSelectedItems, findLatestMainRollout, findRolloutById, formatMessages, readJsonLines, usesTimelineOutput, watchRollout } from "./core.js";
+import { defaultOutputPath, extractSelectedItems, findLatestMainRollout, findMainRolloutByRecency, findRolloutById, formatMessages, formatSessionList, listRecentMainSessions, readJsonLines, usesTimelineOutput, watchRollout } from "./core.js";
 
 const HELP_TEXT = `codex-ai-replies
 
@@ -10,28 +10,31 @@ Usage:
   codex-ai-replies [options]
 
 Options:
-  --count <n>            limit to the latest n messages, default 100
-  --watch                keep streaming newly appended rollout items after the initial output
-  --save                 write the extracted messages to a text file and open with VS Code when available
-  --open                 legacy alias for opening the saved output
-  --output <path>        explicit output path
-  --raw-file <path>      read a specific rollout file instead of auto-discovering
-  --id <sessionId>       read a specific session id instead of the latest session
-  --json                 print JSON instead of the formatted text view
-  --include-tools        select function/tool call events
-  --include-mcp          select MCP events
-  --include-user-input   select RequestUserInput-style events
-  --timeline             render selected events in timeline order
-  --only <kind>          with timeline output, keep only assistant, tools, mcp, user-input, or all events
-  --mcp-server <name>    filter selected MCP events by MCP server name
-  --mcp-tool <name>      filter selected MCP events by MCP tool name
-  --compact-arguments    render MCP arguments as one-line JSON
-  --sessions-root <path> override the default sessions root
-  --help                 show this help
-  --version              show package version
+  --list-sessions, -l       list recently updated main-agent sessions, default 20
+  --count <n>, -n <n>       limit messages, or sessions with --list-sessions
+  --watch, -w [n]           stream rank n main-agent rollout by update time, default 1
+  --watch<n>, -w<n>         compact rank form, for example --watch2 or -w2
+  --save, -s                write the extracted messages to a text file and open with VS Code when available
+  --open, -O                legacy alias for opening the saved output
+  --output <path>, -o <path> explicit output path
+  --raw-file <path>, -f <path> read a specific rollout file instead of auto-discovering
+  --id <sessionId>, -i <sessionId> read a specific session id instead of the latest session
+  --json, -j                print JSON instead of the formatted text view
+  --include-tools, -T       select function/tool call events
+  --include-mcp, -M         select MCP events
+  --include-user-input, -U  select RequestUserInput-style events
+  --timeline, -t            render selected events in timeline order
+  --only <kind>, -y <kind>  with timeline output, keep only assistant, tools, mcp, user-input, or all events
+  --mcp-server <name>, -S <name> filter selected MCP events by MCP server name
+  --mcp-tool <name>, -K <name> filter selected MCP events by MCP tool name
+  --compact-arguments, -c   render MCP arguments as one-line JSON
+  --sessions-root <path>, -r <path> override the default sessions root
+  --help, -h                show this help
+  --version, -v             show package version
 `;
 
 const TIMELINE_FILTER_VALUES = new Set(["assistant", "tools", "mcp", "user-input", "all"]);
+const DEFAULT_SESSION_LIST_COUNT = 20;
 
 function readPackageVersion() {
   const packageJsonPath = new URL("../package.json", import.meta.url);
@@ -44,6 +47,7 @@ function parseArgs(argv) {
     count: 100,
     countProvided: false,
     watch: false,
+    watchRank: 1,
     save: false,
     open: false,
     json: false,
@@ -58,11 +62,23 @@ function parseArgs(argv) {
     sessionsRoot: path.join(os.homedir(), ".codex", "sessions"),
     outputPath: null,
     rawFile: null,
-    sessionId: null
+    sessionId: null,
+    listSessions: false
   };
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    const compactWatchMatch = arg.match(/^--watch(?:=)?(\d+)$/) ?? arg.match(/^-w(\d+)$/);
+    if (compactWatchMatch) {
+      const watchRank = Number.parseInt(compactWatchMatch[1], 10);
+      if (!Number.isInteger(watchRank) || watchRank < 1) {
+        throw new Error("--watch rank must be a positive integer");
+      }
+      options.watch = true;
+      options.watchRank = watchRank;
+      continue;
+    }
+
     switch (arg) {
       case "--help":
       case "-h":
@@ -73,47 +89,74 @@ function parseArgs(argv) {
         options.version = true;
         break;
       case "--count":
+      case "-n":
         options.count = Number.parseInt(argv[++i], 10);
         options.countProvided = true;
         break;
-      case "--watch":
-        options.watch = true;
+      case "--list-sessions":
+      case "-l":
+        options.listSessions = true;
         break;
+      case "--watch":
+      case "-w": {
+        options.watch = true;
+        const nextValue = argv[i + 1];
+        if (nextValue && /^\d+$/.test(nextValue)) {
+          const watchRank = Number.parseInt(nextValue, 10);
+          if (!Number.isInteger(watchRank) || watchRank < 1) {
+            throw new Error("--watch rank must be a positive integer");
+          }
+          options.watchRank = watchRank;
+          i += 1;
+        }
+        break;
+      }
       case "--save":
+      case "-s":
         options.save = true;
         break;
       case "--open":
+      case "-O":
         options.open = true;
         options.save = true;
         break;
       case "--output":
+      case "-o":
         options.outputPath = argv[++i];
         options.save = true;
         break;
       case "--raw-file":
+      case "-f":
         options.rawFile = argv[++i];
         break;
       case "--id":
+      case "-i":
         options.sessionId = argv[++i];
         break;
       case "--json":
+      case "-j":
         options.json = true;
         break;
       case "--include-tools":
+      case "-T":
         options.includeTools = true;
         break;
       case "--include-mcp":
+      case "-M":
         options.includeMcp = true;
         break;
       case "--include-user-input":
+      case "-U":
         options.includeUserInput = true;
         break;
       case "--timeline":
+      case "-t":
         options.timeline = true;
         break;
-      case "--only": {
+      case "--only":
+      case "-y": {
         const onlyValue = argv[i + 1];
-        if (!onlyValue || onlyValue.startsWith("--")) {
+        if (!onlyValue || onlyValue.startsWith("-")) {
           throw new Error("--only requires one of: assistant, tools, mcp, user-input, all");
         }
         options.only = String(onlyValue).trim().toLowerCase();
@@ -121,15 +164,19 @@ function parseArgs(argv) {
         break;
       }
       case "--compact-arguments":
+      case "-c":
         options.compactArguments = true;
         break;
       case "--mcp-server":
+      case "-S":
         options.mcpServer = argv[++i];
         break;
       case "--mcp-tool":
+      case "-K":
         options.mcpTool = argv[++i];
         break;
       case "--sessions-root":
+      case "-r":
         options.sessionsRoot = argv[++i];
         break;
       default:
@@ -149,6 +196,26 @@ function parseArgs(argv) {
       throw new Error("--only cannot be combined with --include-tools, --include-mcp, or --include-user-input");
     }
     options.timeline = true;
+  }
+
+  if (options.listSessions) {
+    const incompatibleOption = [
+      [options.rawFile, "--raw-file"],
+      [options.sessionId, "--id"],
+      [options.watch, "--watch"],
+      [options.includeTools, "--include-tools"],
+      [options.includeMcp, "--include-mcp"],
+      [options.includeUserInput, "--include-user-input"],
+      [options.timeline, "--timeline"],
+      [options.only, "--only"],
+      [options.compactArguments, "--compact-arguments"],
+      [options.mcpServer, "--mcp-server"],
+      [options.mcpTool, "--mcp-tool"]
+    ].find(([isSet]) => Boolean(isSet));
+
+    if (incompatibleOption) {
+      throw new Error(`--list-sessions cannot be combined with ${incompatibleOption[1]}`);
+    }
   }
 
   const selectsMcp = options.only === "mcp" || options.includeMcp;
@@ -174,7 +241,9 @@ function chooseRollout(options) {
     return findRolloutById(options.sessionsRoot, options.sessionId);
   }
 
-  return findLatestMainRollout(options.sessionsRoot);
+  return options.watchRank > 1
+    ? findMainRolloutByRecency(options.sessionsRoot, options.watchRank)
+    : findLatestMainRollout(options.sessionsRoot);
 }
 
 function maybeOpen(filePath) {
@@ -218,6 +287,18 @@ function maybeOpen(filePath) {
   child.unref();
 }
 
+function saveOutput(output, options) {
+  if (!options.save) {
+    return;
+  }
+
+  const outputPath = options.outputPath ?? defaultOutputPath();
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, `${output}\n`, "utf8");
+  process.stderr.write(`Saved: ${outputPath}\n`);
+  maybeOpen(outputPath);
+}
+
 export async function main(argv) {
   const options = parseArgs(argv);
 
@@ -228,6 +309,15 @@ export async function main(argv) {
 
   if (options.version) {
     process.stdout.write(`${readPackageVersion()}\n`);
+    return;
+  }
+
+  if (options.listSessions) {
+    const count = options.countProvided ? options.count : DEFAULT_SESSION_LIST_COUNT;
+    const sessions = listRecentMainSessions(options.sessionsRoot, count);
+    const output = options.json ? JSON.stringify(sessions, null, 2) : formatSessionList(sessions);
+    process.stdout.write(`${output}\n`);
+    saveOutput(output, options);
     return;
   }
 
@@ -252,13 +342,7 @@ export async function main(argv) {
 
   process.stdout.write(`${output}\n`);
 
-  if (options.save) {
-    const outputPath = options.outputPath ?? defaultOutputPath();
-    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-    fs.writeFileSync(outputPath, `${output}\n`, "utf8");
-    process.stderr.write(`Saved: ${outputPath}\n`);
-    maybeOpen(outputPath);
-  }
+  saveOutput(output, options);
 
   if (options.watch) {
     let printedCount = recentMessages.length;

@@ -6,7 +6,7 @@ Read local Codex session rollouts as a usable CLI transcript.
 
 ## Release Status
 
-Current package version: `0.5.1`
+Current package version: `0.7.0`
 
 - Timeline filtering, rollout selection hardening, and release checks are included
 - `npm test`, `npm run test:release`, and `npm run release:final` are the intended release gates
@@ -19,6 +19,7 @@ Current package version: `0.5.1`
 - Isolate MCP activity for debugging or audit work
 - Save a readable transcript to a text file and open it immediately
 - Target a specific session by id or read a rollout file directly
+- 先列出最近的主会话，再按会话 ID 读取所需内容
 
 ## Install
 
@@ -60,10 +61,32 @@ Start by showing the latest 20 items, then continue streaming new ones:
 cxr --watch --count 20
 ```
 
+跟随按更新时间排名第二、第三或任意第 N 个主会话：
+
+```bash
+cxr --watch2
+cxr --watch3
+cxr --watch 4
+cxr -w4
+```
+
 Read a specific session by id:
 
 ```bash
 cxr --id 019d9bb5-d432-7453-a92c-b3376ef23b58
+```
+
+列出最近更新的 20 个主会话，再用其中的 ID 读取内容：
+
+```bash
+cxr --list-sessions
+cxr --id 019d9bb5-d432-7453-a92c-b3376ef23b58
+```
+
+限制为最近 10 个会话并输出 JSON：
+
+```bash
+cxr --list-sessions --count 10 --json
 ```
 
 Show a mixed timeline with assistant, tool, and MCP events:
@@ -107,6 +130,7 @@ cxr --count 20 --save --output ./messages.txt
 - Defaults to `~/.codex/sessions`
 - Chooses the most recently updated root/main-agent rollout when no selector is given
 - Excludes subagent rollouts from the default lookup
+- `--list-sessions` 按 rollout 文件更新时间列出最近的主会话，默认 20 个
 - Accepts `--id` to select a specific session
 - Accepts `--raw-file` to read one rollout JSONL file directly
 
@@ -145,7 +169,7 @@ In default text mode, multiline MCP string arguments are rendered as readable te
 
 Use `--json` if you want machine-friendly output instead.
 
-`--watch` keeps the default initial extraction rules, then streams newly appended items from the same rollout file. It does not switch to a different newer session while running.
+`--watch` keeps the default initial extraction rules, then streams newly appended items from the same rollout file. It does not switch to a different newer session while running. `--watch2`, `--watch3`, and other `--watchN` forms choose the Nth most recently updated main-agent rollout; subagent rollouts remain excluded.
 
 ## Examples
 
@@ -175,8 +199,10 @@ cxr --sessions-root ./fixtures/sessions --include-tools
 
 ## Command Reference
 
-- `--count <n>`: limit to the latest `n` extracted items after category filtering, default `100`
-- `--watch`: keep streaming newly appended rollout items after printing the initial selection
+- `--list-sessions`: 列出最近更新的主会话；文本输出重点展示首条与末条用户请求、工作目录、会话 ID 和 rollout 路径，默认 20 个
+- `--count <n>`: limit to the latest `n` extracted items after category filtering, default `100`; with `--list-sessions`, limit the session list
+- `--watch [n]`: keep streaming the nth most recently updated main-agent rollout after printing the initial selection; omit `n` for the latest rollout
+- `--watchN`: compact rank form such as `--watch2` or `--watch3`
 - `--save`: write the extracted output to a text file and open it automatically
 - `--open`: legacy alias for saving and opening the output file
 - `--output <path>`: explicit output path
@@ -195,11 +221,41 @@ cxr --sessions-root ./fixtures/sessions --include-tools
 - `--help`: show help
 - `--version`: show package version
 
+## 短参数
+
+短参数与长参数等价，可以和原有长参数混用。带值的短参数需要把值作为下一个参数传入，例如 `cxr -l -n 10 -j`。
+
+| 长参数 | 短参数 |
+| --- | --- |
+| `--list-sessions` | `-l` |
+| `--count <n>` | `-n <n>` |
+| `--watch [n]` | `-w [n]` |
+| `--save` | `-s` |
+| `--open` | `-O` |
+| `--output <path>` | `-o <path>` |
+| `--raw-file <path>` | `-f <path>` |
+| `--id <sessionId>` | `-i <sessionId>` |
+| `--json` | `-j` |
+| `--include-tools` | `-T` |
+| `--include-mcp` | `-M` |
+| `--include-user-input` | `-U` |
+| `--timeline` | `-t` |
+| `--only <kind>` | `-y <kind>` |
+| `--mcp-server <name>` | `-S <name>` |
+| `--mcp-tool <name>` | `-K <name>` |
+| `--compact-arguments` | `-c` |
+| `--sessions-root <path>` | `-r <path>` |
+| `--help` | `-h` |
+| `--version` | `-v` |
+
+也可以把排名直接附在短参数后，例如 `-w2`、`-w3`。
+
 ## Reliability Notes
 
 - Malformed rollout JSONL is treated as an error, with exact file and line reporting
 - Assistant extraction prefers `event_msg.agent_message` and falls back to assistant `response_item` text when needed
 - `--count` is applied after category filtering, so targeted extracts stay accurate
+- 最近会话列表按文件更新时间排序，忽略子代理 rollout；首条与末条用户请求均压缩为最多 160 个字符的单行预览，工作目录优先采用最后一个 turn context
 
 ## Release Checks
 

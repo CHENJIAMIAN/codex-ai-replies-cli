@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0
+
+### Added
+
+- `--list-sessions` 用于快速列出最近更新的主会话；支持 `--count` 限制数量和 `--json` 输出，重点展示会话 ID、首条与末条用户请求、工作目录及 rollout 路径
+- 常用 CLI 参数现支持单字母短参数；完整映射见 README 的“短参数”章节
+- `--watchN` 可按更新时间跟随任意第 N 个主会话；也支持 `--watch N` 和 `-wN` 形式
+
 ## 0.6.0
 
 Release focused on real-time transcript following for active Codex sessions.

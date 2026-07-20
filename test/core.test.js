@@ -205,6 +205,91 @@ test("streams appended rollout messages in --watch mode after printing the lates
   }
 });
 
+test("--watchN 跟随按更新时间排名的指定主会话", async () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+  const thirdPath = path.join(sessionsRoot, "2026", "04", "21", "rollout-2026-04-21T10-00-00-third.jsonl");
+  const secondPath = path.join(sessionsRoot, "2026", "04", "21", "rollout-2026-04-21T11-00-00-second.jsonl");
+  const latestPath = path.join(sessionsRoot, "2026", "04", "21", "rollout-2026-04-21T12-00-00-latest.jsonl");
+  const subagentPath = path.join(sessionsRoot, "2026", "04", "21", "rollout-2026-04-21T13-00-00-subagent.jsonl");
+
+  writeLines(thirdPath, [
+    JSON.stringify({ timestamp: "2026-04-21T10:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({ timestamp: "2026-04-21T10:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "third initial" } })
+  ]);
+  writeLines(secondPath, [
+    JSON.stringify({ timestamp: "2026-04-21T11:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({ timestamp: "2026-04-21T11:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "second initial" } })
+  ]);
+  writeLines(latestPath, [
+    JSON.stringify({ timestamp: "2026-04-21T12:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({ timestamp: "2026-04-21T12:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "latest initial" } })
+  ]);
+  writeLines(subagentPath, [
+    JSON.stringify({
+      timestamp: "2026-04-21T13:00:00Z",
+      type: "session_meta",
+      payload: { source: { subagent: { thread_spawn: { parent: "root" } } } }
+    }),
+    JSON.stringify({ timestamp: "2026-04-21T13:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "subagent initial" } })
+  ]);
+
+  fs.utimesSync(thirdPath, new Date("2026-04-21T10:00:00Z"), new Date("2026-04-21T10:00:00Z"));
+  fs.utimesSync(secondPath, new Date("2026-04-21T11:00:00Z"), new Date("2026-04-21T11:00:00Z"));
+  fs.utimesSync(latestPath, new Date("2026-04-21T12:00:00Z"), new Date("2026-04-21T12:00:00Z"));
+  fs.utimesSync(subagentPath, new Date("2026-04-21T13:00:00Z"), new Date("2026-04-21T13:00:00Z"));
+
+  const child = spawn(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--watch3"
+  ], {
+    cwd: repoRoot,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+
+  try {
+    await waitForText(() => stdout, "third initial");
+    assert.doesNotMatch(stdout, /second initial|latest initial|subagent initial/);
+
+    fs.appendFileSync(thirdPath, `${JSON.stringify({
+      timestamp: "2026-04-21T10:00:02Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "third appended" }
+    })}\n`, "utf8");
+
+    await waitForText(() => stdout, "third appended");
+    assert.equal(stderr, "", `stderr=${stderr}`);
+  } finally {
+    if (!child.killed) {
+      child.kill();
+    }
+    await waitForExit(child);
+  }
+});
+
+test("拒绝无效的 watch 排名", () => {
+  const result = spawnSync(process.execPath, [cliEntry, "--watch0"], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stderr, /--watch rank must be a positive integer/);
+});
+
 test("renders rollout timestamps in the local timezone for text output", () => {
   const tempDir = makeTempDir();
   const sessionsRoot = path.join(tempDir, "sessions");
@@ -265,6 +350,176 @@ test("selects latest main-agent rollout by file update time", () => {
   assert.doesNotMatch(result.stdout, /named later/);
 });
 
+test("列出最近主会话并跳过子代理", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+  const olderPath = path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T10-00-00-older.jsonl");
+  const newerPath = path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T11-00-00-newer.jsonl");
+  const subagentPath = path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T12-00-00-sub.jsonl");
+
+  writeLines(olderPath, [
+    JSON.stringify({ timestamp: "2026-04-17T10:00:00Z", type: "session_meta", payload: { session_source: "cli", id: "older-root", cwd: "D:\\workspace\\older" } }),
+    JSON.stringify({
+      timestamp: "2026-04-17T10:00:01Z",
+      type: "response_item",
+      payload: { type: "message", role: "user", content: [{ type: "input_text", text: "older request" }] }
+    })
+  ]);
+
+  writeLines(newerPath, [
+    JSON.stringify({ timestamp: "2026-04-17T11:00:00Z", type: "session_meta", payload: { session_source: "cli", id: "newer-root", cwd: "D:\\workspace\\initial" } }),
+    JSON.stringify({
+      timestamp: "2026-04-17T11:00:01Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "newer first request\nwith whitespace" }
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-17T11:00:02Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "newer last request" }
+    }),
+    JSON.stringify({ timestamp: "2026-04-17T11:00:03Z", type: "turn_context", payload: { cwd: "D:\\workspace\\newer" } })
+  ]);
+
+  writeLines(subagentPath, [
+    JSON.stringify({
+      timestamp: "2026-04-17T12:00:00Z",
+      type: "session_meta",
+      payload: { id: "subagent", source: { subagent: { thread_spawn: { parent: "root" } } } }
+    }),
+    JSON.stringify({ timestamp: "2026-04-17T12:00:01Z", type: "event_msg", payload: { type: "user_message", message: "do not show" } })
+  ]);
+
+  fs.utimesSync(olderPath, new Date("2026-04-17T10:00:00Z"), new Date("2026-04-17T10:00:00Z"));
+  fs.utimesSync(newerPath, new Date("2026-04-17T11:00:00Z"), new Date("2026-04-17T11:00:00Z"));
+  fs.utimesSync(subagentPath, new Date("2026-04-17T12:00:00Z"), new Date("2026-04-17T12:00:00Z"));
+
+  const { result } = runCli(["--sessions-root", sessionsRoot, "--list-sessions"], { tempDir });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /id: newer-root/);
+  assert.match(result.stdout, /first request: newer first request with whitespace/);
+  assert.match(result.stdout, /last request: newer last request/);
+  assert.match(result.stdout, /cwd: D:\\workspace\\newer/);
+  assert.match(result.stdout, new RegExp(`path: ${newerPath.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}`));
+  assert.match(result.stdout, /id: older-root/);
+  assert.match(result.stdout, /first request: older request/);
+  assert.match(result.stdout, /last request: older request/);
+  assert.match(result.stdout, /cwd: D:\\workspace\\older/);
+  assert.ok(result.stdout.indexOf("id: newer-root") < result.stdout.indexOf("id: older-root"));
+  assert.doesNotMatch(result.stdout, /subagent|do not show/);
+});
+
+test("最近会话列表支持数量限制和 JSON 输出", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+  const olderPath = path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T10-00-00-older.jsonl");
+  const newerPath = path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T11-00-00-newer.jsonl");
+
+  writeLines(olderPath, [
+    JSON.stringify({ timestamp: "2026-04-17T10:00:00Z", type: "session_meta", payload: { session_source: "cli", id: "older-root" } }),
+    JSON.stringify({ timestamp: "2026-04-17T10:00:01Z", type: "event_msg", payload: { type: "user_message", message: "older request" } })
+  ]);
+  writeLines(newerPath, [
+    JSON.stringify({ timestamp: "2026-04-17T11:00:00Z", type: "session_meta", payload: { session_source: "cli", id: "newer-root", cwd: "D:\\workspace\\initial" } }),
+    JSON.stringify({ timestamp: "2026-04-17T11:00:01Z", type: "event_msg", payload: { type: "user_message", message: "newer first request" } }),
+    JSON.stringify({ timestamp: "2026-04-17T11:00:02Z", type: "event_msg", payload: { type: "user_message", message: "newer last request" } }),
+    JSON.stringify({ timestamp: "2026-04-17T11:00:03Z", type: "turn_context", payload: { cwd: "D:\\workspace\\newer" } })
+  ]);
+
+  fs.utimesSync(olderPath, new Date("2026-04-17T10:00:00Z"), new Date("2026-04-17T10:00:00Z"));
+  fs.utimesSync(newerPath, new Date("2026-04-17T11:00:00Z"), new Date("2026-04-17T11:00:00Z"));
+
+  const { result } = runCli([
+    "--sessions-root",
+    sessionsRoot,
+    "--list-sessions",
+    "--count",
+    "1",
+    "--json"
+  ], { tempDir });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  const sessions = JSON.parse(result.stdout);
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].id, "newer-root");
+  assert.equal(sessions[0].firstUserMessage, "newer first request");
+  assert.equal(sessions[0].lastUserMessage, "newer last request");
+  assert.equal(sessions[0].workingDirectory, "D:\\workspace\\newer");
+  assert.equal(sessions[0].filePath, newerPath);
+  assert.match(sessions[0].updatedAt, /^2026-04-17T11:00:00/);
+});
+
+test("短参数可列出并读取指定会话", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+  const rolloutPath = path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T11-00-00-root.jsonl");
+
+  writeLines(rolloutPath, [
+    JSON.stringify({ timestamp: "2026-04-17T11:00:00Z", type: "session_meta", payload: { session_source: "cli", id: "short-option-root" } }),
+    JSON.stringify({ timestamp: "2026-04-17T11:00:01Z", type: "event_msg", payload: { type: "user_message", message: "short option request" } }),
+    JSON.stringify({ timestamp: "2026-04-17T11:00:02Z", type: "event_msg", payload: { type: "agent_message", message: "short option answer" } })
+  ]);
+
+  const listed = runCli(["-r", sessionsRoot, "-l", "-n", "1", "-j"], { tempDir }).result;
+  assert.equal(listed.status, 0, `stdout=${listed.stdout}\nstderr=${listed.stderr}`);
+  assert.equal(JSON.parse(listed.stdout)[0].id, "short-option-root");
+
+  const selected = runCli(["-r", sessionsRoot, "-i", "short-option-root", "-n", "1", "-j"], { tempDir }).result;
+  assert.equal(selected.status, 0, `stdout=${selected.stdout}\nstderr=${selected.stderr}`);
+  assert.equal(JSON.parse(selected.stdout)[0].message, "short option answer");
+
+  const rawFile = runCli(["-f", rolloutPath, "-n", "1", "-j"], { tempDir }).result;
+  assert.equal(rawFile.status, 0, `stdout=${rawFile.stdout}\nstderr=${rawFile.stderr}`);
+  assert.equal(JSON.parse(rawFile.stdout)[0].message, "short option answer");
+});
+
+test("短参数可筛选 MCP 时间线", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T11-00-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-04-17T11:00:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({
+      timestamp: "2026-04-17T11:00:01Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_begin", server: "server-a", tool: "tool-a", arguments: "{\"line\":\"one\"}" }
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-17T11:00:02Z",
+      type: "event_msg",
+      payload: { type: "mcp_tool_call_begin", server: "server-b", tool: "tool-b", arguments: "{\"line\":\"two\"}" }
+    })
+  ]);
+
+  const result = runCli([
+    "-r",
+    sessionsRoot,
+    "-y",
+    "mcp",
+    "-S",
+    "server-a",
+    "-K",
+    "tool-a",
+    "-c"
+  ], { tempDir }).result;
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /\[mcp_tool_call_begin\] server-a tool-a/);
+  assert.doesNotMatch(result.stdout, /server-b|tool-b/);
+  assert.match(result.stdout, /arguments: {"line":"one"}/);
+});
+
+test("最近会话列表拒绝与会话读取选项混用", () => {
+  const result = spawnSync(process.execPath, [cliEntry, "--list-sessions", "--id", "some-session"], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stderr, /--list-sessions cannot be combined with --id/);
+});
+
 test("prints help text", () => {
   const result = spawnSync(process.execPath, [cliEntry, "--help"], {
     cwd: repoRoot,
@@ -274,6 +529,9 @@ test("prints help text", () => {
   assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
   assert.match(result.stdout, /codex-ai-replies/);
   assert.match(result.stdout, /--count <n>/);
+  assert.match(result.stdout, /--list-sessions/);
+  assert.match(result.stdout, /-l/);
+  assert.match(result.stdout, /-n <n>/);
   assert.match(result.stdout, /--save/);
   assert.match(result.stdout, /--open/);
 });

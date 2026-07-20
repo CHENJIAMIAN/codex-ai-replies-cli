@@ -61,6 +61,103 @@ function getSessionMeta(entries) {
   return entries.find((entry) => entry.type === "session_meta")?.payload ?? null;
 }
 
+function getSessionId(filePath, entries) {
+  const payload = getSessionMeta(entries);
+  const id = [payload?.id, payload?.session_id, payload?.thread_id, payload?.trace_id]
+    .map((value) => normalizeLookupValue(value))
+    .find(Boolean);
+
+  if (id) {
+    return id;
+  }
+
+  return path.basename(filePath).replace(/^rollout-/i, "").replace(/\.jsonl$/i, "");
+}
+
+function getTextContent(content) {
+  if (typeof content === "string") {
+    return content.trim();
+  }
+
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  for (const item of content) {
+    if (typeof item === "string" && item.trim()) {
+      return item.trim();
+    }
+
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const text = item.text ?? item.input_text ?? item.value;
+    if (typeof text === "string" && text.trim()) {
+      return text.trim();
+    }
+  }
+
+  return "";
+}
+
+function getUserRequestMessages(entries) {
+  const eventMessages = [];
+  const responseMessages = [];
+
+  for (const entry of entries) {
+    if (entry.type === "event_msg" && entry.payload?.type === "user_message") {
+      const message = entry.payload.message ?? entry.payload.text;
+      if (typeof message === "string" && message.trim()) {
+        eventMessages.push(message.trim());
+      }
+    }
+
+    if (
+      entry.type === "response_item"
+      && entry.payload?.type === "message"
+      && entry.payload?.role === "user"
+    ) {
+      const message = getTextContent(entry.payload.content);
+      if (message) {
+        responseMessages.push(message);
+      }
+    }
+  }
+
+  return eventMessages.length > 0 ? eventMessages : responseMessages;
+}
+
+function getWorkingDirectory(entries) {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.type !== "turn_context") {
+      continue;
+    }
+
+    const cwd = entry.payload?.cwd;
+    if (typeof cwd === "string" && cwd.trim()) {
+      return cwd.trim();
+    }
+  }
+
+  const cwd = getSessionMeta(entries)?.cwd;
+  return typeof cwd === "string" ? cwd.trim() : "";
+}
+
+function makeSessionMessagePreview(message, maxLength = 160) {
+  const compact = String(message ?? "")
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (compact.length <= maxLength) {
+    return compact;
+  }
+
+  return `${compact.slice(0, maxLength - 3)}...`;
+}
+
 function isSubagentRollout(entries) {
   const payload = getSessionMeta(entries);
   if (!payload) {
@@ -122,19 +219,35 @@ function getRolloutMatchScore(filePath, entries, requestedId) {
   return score;
 }
 
-export function findLatestMainRollout(sessionsRoot) {
+export function findMainRolloutByRecency(sessionsRoot, rank = 1) {
+  if (!Number.isInteger(rank) || rank < 1) {
+    throw new Error("Rollout recency rank must be a positive integer");
+  }
+
   if (!fs.existsSync(sessionsRoot)) {
     throw new Error(`Sessions root not found: ${sessionsRoot}`);
   }
 
+  let mainRolloutCount = 0;
   for (const filePath of walkRollouts(sessionsRoot)) {
     const entries = readJsonLines(filePath);
     if (!isSubagentRollout(entries)) {
-      return { filePath, entries };
+      mainRolloutCount += 1;
+      if (mainRolloutCount === rank) {
+        return { filePath, entries };
+      }
     }
   }
 
+  if (rank > 1) {
+    throw new Error(`No main-agent rollout found at recency rank ${rank} under: ${sessionsRoot}`);
+  }
+
   throw new Error(`No main-agent rollout file found under: ${sessionsRoot}`);
+}
+
+export function findLatestMainRollout(sessionsRoot) {
+  return findMainRolloutByRecency(sessionsRoot);
 }
 
 export function findRolloutById(sessionsRoot, requestedId) {
@@ -157,6 +270,41 @@ export function findRolloutById(sessionsRoot, requestedId) {
   }
 
   throw new Error(`No rollout file found for id: ${requestedId}`);
+}
+
+export function listRecentMainSessions(sessionsRoot, count) {
+  if (!fs.existsSync(sessionsRoot)) {
+    throw new Error(`Sessions root not found: ${sessionsRoot}`);
+  }
+
+  const sessions = [];
+  for (const filePath of walkRollouts(sessionsRoot)) {
+    const entries = readJsonLines(filePath);
+    if (isSubagentRollout(entries)) {
+      continue;
+    }
+
+    const userRequests = getUserRequestMessages(entries);
+
+    sessions.push({
+      id: getSessionId(filePath, entries),
+      updatedAt: fs.statSync(filePath).mtime.toISOString(),
+      firstUserMessage: makeSessionMessagePreview(userRequests[0]),
+      lastUserMessage: makeSessionMessagePreview(userRequests[userRequests.length - 1]),
+      workingDirectory: getWorkingDirectory(entries),
+      filePath
+    });
+
+    if (sessions.length >= count) {
+      return sessions;
+    }
+  }
+
+  if (sessions.length > 0) {
+    return sessions;
+  }
+
+  throw new Error(`No main-agent rollout file found under: ${sessionsRoot}`);
 }
 
 export function extractMessages(entries) {
@@ -566,6 +714,25 @@ function formatDisplayTimestamp(timestamp) {
   return hasFractionalSeconds
     ? `${year}-${month}-${day} ${hour}:${minute}:${second}.${milliseconds}`
     : `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+}
+
+export function formatSessionList(sessions) {
+  return sessions
+    .map((session, index) => {
+      const firstUserMessage = session.firstUserMessage || "(no user message found)";
+      const lastUserMessage = session.lastUserMessage || "(no user message found)";
+      const workingDirectory = session.workingDirectory || "(unknown)";
+      return [
+        "==========",
+        `[${index + 1}] ${formatDisplayTimestamp(session.updatedAt)}`,
+        `id: ${session.id}`,
+        `first request: ${firstUserMessage}`,
+        `last request: ${lastUserMessage}`,
+        `cwd: ${workingDirectory}`,
+        `path: ${session.filePath}`
+      ].join("\n");
+    })
+    .join("\n");
 }
 
 export function formatMessages(messages, options = {}) {
