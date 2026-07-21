@@ -534,6 +534,8 @@ test("prints help text", () => {
   assert.match(result.stdout, /-n <n>/);
   assert.match(result.stdout, /--save/);
   assert.match(result.stdout, /--open/);
+  assert.match(result.stdout, /--all-events/);
+  assert.match(result.stdout, /-A/);
 });
 
 test("save also opens output in VS Code when code is available", () => {
@@ -559,7 +561,7 @@ test("save also opens output in VS Code when code is available", () => {
   assert.equal(waitForFile(markerPath), true, "expected code shim to be invoked");
 });
 
-test("includes tool and MCP events when requested in timeline output", () => {
+test("includes tool calls and MCP events when requested in timeline output", () => {
   const tempDir = makeTempDir();
   const sessionsRoot = path.join(tempDir, "sessions");
 
@@ -588,11 +590,84 @@ test("includes tool and MCP events when requested in timeline output", () => {
   assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
   assert.match(result.stdout, /AI before tool/);
   assert.match(result.stdout, /\[tool_call\] read_file/);
-  assert.match(result.stdout, /\[tool_output\] call_1/);
+  assert.match(result.stdout, /arguments:\n\{\n  "path": "a\.txt"\n\}/);
+  assert.doesNotMatch(result.stdout, /\[tool_output\] call_1/);
   assert.match(result.stdout, /\[mcp_tool_call_begin\] deepwiki ask_question/);
   assert.match(result.stdout, /\[mcp_tool_call_end\] deepwiki ask_question/);
   assert.match(result.stdout, /arguments:\n\{\n  "q": "types"\n\}/);
   assert.match(result.stdout, /AI after tool/);
+});
+
+test("expands custom tool calls into their concrete tools and arguments", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T12-30-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-04-17T12:30:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({
+      timestamp: "2026-04-17T12:30:01Z",
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        call_id: "custom_call_1",
+        input: "const label = 'tools.not_a_real_call()';\nconst result = await tools.shell_command({\"command\":\"es -n 100 -ext docx Tooltip\"});\ntext(result);"
+      }
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-17T12:30:02Z",
+      type: "response_item",
+      payload: { type: "custom_tool_call_output", call_id: "custom_call_1" }
+    })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--include-tools"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /\[tool_call\] shell_command/);
+  assert.match(result.stdout, /arguments:\n\{\n  "command": "es -n 100 -ext docx Tooltip"\n\}/);
+  assert.doesNotMatch(result.stdout, /\[tool_call\] exec|\[tool_calls\]|not_a_real_call|\[tool_output\] custom_call_1/);
+});
+
+test("resolves static patch variables in custom tool calls", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+
+  writeLines(path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T12-35-00-root.jsonl"), [
+    JSON.stringify({ timestamp: "2026-04-17T12:35:00Z", type: "session_meta", payload: { session_source: "cli" } }),
+    JSON.stringify({
+      timestamp: "2026-04-17T12:35:01Z",
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "exec",
+        input: "const patch = \"*** Begin Patch\\n*** Update File: notes.txt\\n+hello\\n*** End Patch\";\nawait tools.apply_patch(patch);"
+      }
+    })
+  ]);
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--include-tools"
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /\[tool_call\] apply_patch/);
+  assert.match(result.stdout, /arguments:\n\{\n  "patch": \|\n    \*\*\* Begin Patch\n    \*\*\* Update File: notes\.txt\n    \+hello\n    \*\*\* End Patch\n\}/);
+  assert.doesNotMatch(result.stdout, /"input": "patch"/);
 });
 
 test("selects a specific session by id when --id is provided", () => {
@@ -631,6 +706,35 @@ test("selects a specific session by id when --id is provided", () => {
   assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
   assert.match(result.stdout, /session aaa111/);
   assert.doesNotMatch(result.stdout, /session bbb222/);
+});
+
+test("looks up UUID v7 sessions before parsing unrelated rollouts", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+  const sessionId = "019f8221-74d3-7591-ac50-78fc244817c9";
+
+  writeLines(path.join(sessionsRoot, "2026", "07", "21", `rollout-2026-07-21T08-44-18-${sessionId}.jsonl`), [
+    JSON.stringify({ timestamp: "2026-07-21T00:44:18Z", type: "session_meta", payload: { session_source: "cli", id: sessionId } }),
+    JSON.stringify({ timestamp: "2026-07-21T00:44:19Z", type: "event_msg", payload: { type: "agent_message", message: "UUID v7 session" } })
+  ]);
+
+  const unrelatedPath = path.join(sessionsRoot, "2026", "07", "20", "rollout-2026-07-20T10-00-00-unrelated.jsonl");
+  fs.mkdirSync(path.dirname(unrelatedPath), { recursive: true });
+  fs.writeFileSync(unrelatedPath, "{ not valid json\n", "utf8");
+
+  const result = spawnSync(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--id",
+    sessionId
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stdout, /UUID v7 session/);
 });
 
 test("prefers the main-agent rollout when root and subagent share the requested id", () => {
@@ -994,7 +1098,7 @@ test("treats include flags as category selectors and --timeline as ordering only
 
   assert.equal(toolsTimeline.status, 0, `stdout=${toolsTimeline.stdout}\nstderr=${toolsTimeline.stderr}`);
   assert.match(toolsTimeline.stdout, /\[tool_call\] read_file/);
-  assert.match(toolsTimeline.stdout, /\[tool_output\] call_9/);
+  assert.doesNotMatch(toolsTimeline.stdout, /\[tool_output\] call_9/);
   assert.doesNotMatch(toolsTimeline.stdout, /assistant only/);
   assert.doesNotMatch(toolsTimeline.stdout, /\[mcp_tool_call_begin\] deepwiki ask_question/);
 
@@ -1133,7 +1237,7 @@ test("includes user-input events in mixed timeline selection", () => {
   assert.match(result.stdout, /\[tool_call\] read_file/);
 });
 
-test("exports all rollout entries when --only all is selected", () => {
+test("exports all rollout entries when --all-events is selected", () => {
   const tempDir = makeTempDir();
   const sessionsRoot = path.join(tempDir, "sessions");
   const outputPath = path.join(tempDir, "all-items.txt");
@@ -1150,8 +1254,7 @@ test("exports all rollout entries when --only all is selected", () => {
     sessionsRoot,
     "--id",
     "all-test",
-    "--only",
-    "all",
+    "--all-events",
     "--save",
     "--output",
     outputPath
@@ -1173,7 +1276,7 @@ test("exports all rollout entries when --only all is selected", () => {
   assert.match(written, /"name": "read_file"/);
 });
 
-test("exports all entries without the default 100-item cap when --only all is selected", () => {
+test("keeps --only all as a compatibility alias without the default 100-item cap", () => {
   const tempDir = makeTempDir();
   const sessionsRoot = path.join(tempDir, "sessions");
 
@@ -1258,7 +1361,17 @@ test("fails fast when --only has no value", () => {
   });
 
   assert.notEqual(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
-  assert.match(result.stderr, /--only requires one of: assistant, tools, mcp, user-input, all/);
+  assert.match(result.stderr, /--only requires one of: assistant, tools, mcp, user-input/);
+});
+
+test("rejects --all-events combined with category selectors", () => {
+  const result = spawnSync(process.execPath, [cliEntry, "--all-events", "--include-tools"], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+
+  assert.notEqual(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+  assert.match(result.stderr, /--all-events cannot be combined with --only, --include-tools, --include-mcp, or --include-user-input/);
 });
 
 test("fails with file and line details when a rollout JSONL line is malformed", () => {

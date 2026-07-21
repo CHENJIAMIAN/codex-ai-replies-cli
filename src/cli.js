@@ -24,16 +24,17 @@ Options:
   --include-mcp, -M         select MCP events
   --include-user-input, -U  select RequestUserInput-style events
   --timeline, -t            render selected events in timeline order
-  --only <kind>, -y <kind>  with timeline output, keep only assistant, tools, mcp, user-input, or all events
+  --only <kind>, -y <kind>  with timeline output, keep only assistant, tools, mcp, or user-input events
+  --all-events, -A          render every raw rollout event
   --mcp-server <name>, -S <name> filter selected MCP events by MCP server name
   --mcp-tool <name>, -K <name> filter selected MCP events by MCP tool name
-  --compact-arguments, -c   render MCP arguments as one-line JSON
+  --compact-arguments, -c   render arguments as one-line JSON
   --sessions-root <path>, -r <path> override the default sessions root
   --help, -h                show this help
   --version, -v             show package version
 `;
 
-const TIMELINE_FILTER_VALUES = new Set(["assistant", "tools", "mcp", "user-input", "all"]);
+const TIMELINE_FILTER_VALUES = new Set(["assistant", "tools", "mcp", "user-input"]);
 const DEFAULT_SESSION_LIST_COUNT = 20;
 
 function readPackageVersion() {
@@ -56,6 +57,7 @@ function parseArgs(argv) {
     includeUserInput: false,
     timeline: false,
     only: null,
+    allEvents: false,
     compactArguments: false,
     mcpServer: null,
     mcpTool: null,
@@ -153,13 +155,22 @@ function parseArgs(argv) {
       case "-t":
         options.timeline = true;
         break;
+      case "--all-events":
+      case "-A":
+        options.allEvents = true;
+        break;
       case "--only":
       case "-y": {
         const onlyValue = argv[i + 1];
         if (!onlyValue || onlyValue.startsWith("-")) {
-          throw new Error("--only requires one of: assistant, tools, mcp, user-input, all");
+          throw new Error("--only requires one of: assistant, tools, mcp, user-input");
         }
-        options.only = String(onlyValue).trim().toLowerCase();
+        const normalizedOnlyValue = String(onlyValue).trim().toLowerCase();
+        if (normalizedOnlyValue === "all") {
+          options.allEvents = true;
+        } else {
+          options.only = normalizedOnlyValue;
+        }
         i += 1;
         break;
       }
@@ -190,11 +201,19 @@ function parseArgs(argv) {
 
   if (options.only) {
     if (!TIMELINE_FILTER_VALUES.has(options.only)) {
-      throw new Error("--only must be one of: assistant, tools, mcp, user-input, all");
+      throw new Error("--only must be one of: assistant, tools, mcp, user-input");
     }
     if (options.includeTools || options.includeMcp || options.includeUserInput) {
       throw new Error("--only cannot be combined with --include-tools, --include-mcp, or --include-user-input");
     }
+    options.timeline = true;
+  }
+
+  if (options.allEvents) {
+    if (options.includeTools || options.includeMcp || options.includeUserInput || options.only) {
+      throw new Error("--all-events cannot be combined with --only, --include-tools, --include-mcp, or --include-user-input");
+    }
+    options.only = "all";
     options.timeline = true;
   }
 
@@ -206,6 +225,7 @@ function parseArgs(argv) {
       [options.includeTools, "--include-tools"],
       [options.includeMcp, "--include-mcp"],
       [options.includeUserInput, "--include-user-input"],
+      [options.allEvents, "--all-events"],
       [options.timeline, "--timeline"],
       [options.only, "--only"],
       [options.compactArguments, "--compact-arguments"],

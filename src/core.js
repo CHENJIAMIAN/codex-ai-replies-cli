@@ -219,6 +219,63 @@ function getRolloutMatchScore(filePath, entries, requestedId) {
   return score;
 }
 
+function getUuidV7Date(requestedId) {
+  const compactId = normalizeLookupValue(requestedId).replaceAll("-", "");
+  if (!/^[0-9a-f]{32}$/i.test(compactId) || compactId[12].toLowerCase() !== "7") {
+    return null;
+  }
+
+  const timestampMs = Number.parseInt(compactId.slice(0, 12), 16);
+  if (!Number.isSafeInteger(timestampMs)) {
+    return null;
+  }
+
+  const date = new Date(timestampMs);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatSessionDatePath(date, useUtc) {
+  const year = useUtc ? date.getUTCFullYear() : date.getFullYear();
+  const month = String((useUtc ? date.getUTCMonth() : date.getMonth()) + 1).padStart(2, "0");
+  const day = String(useUtc ? date.getUTCDate() : date.getDate()).padStart(2, "0");
+  return path.join(String(year), month, day);
+}
+
+function findUuidV7RolloutCandidates(sessionsRoot, requestedId) {
+  const date = getUuidV7Date(requestedId);
+  if (!date) {
+    return [];
+  }
+
+  const wantedId = normalizeLookupValue(requestedId).toLowerCase();
+  const fileSuffix = `-${wantedId}.jsonl`;
+  const dateDirectories = [...new Set([
+    formatSessionDatePath(date, false),
+    formatSessionDatePath(date, true)
+  ])];
+  const candidates = [];
+
+  for (const dateDirectory of dateDirectories) {
+    const directoryPath = path.join(sessionsRoot, dateDirectory);
+    if (!fs.existsSync(directoryPath)) {
+      continue;
+    }
+
+    for (const entry of fs.readdirSync(directoryPath, { withFileTypes: true })) {
+      const entryName = entry.name.toLowerCase();
+      if (
+        entry.isFile()
+        && entryName.startsWith("rollout-")
+        && entryName.endsWith(fileSuffix)
+      ) {
+        candidates.push(path.join(directoryPath, entry.name));
+      }
+    }
+  }
+
+  return candidates;
+}
+
 export function findMainRolloutByRecency(sessionsRoot, rank = 1) {
   if (!Number.isInteger(rank) || rank < 1) {
     throw new Error("Rollout recency rank must be a positive integer");
@@ -253,6 +310,14 @@ export function findLatestMainRollout(sessionsRoot) {
 export function findRolloutById(sessionsRoot, requestedId) {
   if (!fs.existsSync(sessionsRoot)) {
     throw new Error(`Sessions root not found: ${sessionsRoot}`);
+  }
+
+  for (const filePath of findUuidV7RolloutCandidates(sessionsRoot, requestedId)) {
+    const entries = readJsonLines(filePath);
+    const score = getRolloutMatchScore(filePath, entries, requestedId);
+    if (score >= 101) {
+      return { filePath, entries };
+    }
   }
 
   let bestMatch = null;
@@ -374,7 +439,7 @@ function getTimelineKinds(options = {}) {
   }
 
   if (options.only === "tools") {
-    return new Set(["tool_call", "tool_output"]);
+    return new Set(["tool_call"]);
   }
 
   if (options.only === "mcp") {
@@ -413,7 +478,6 @@ function getTimelineKinds(options = {}) {
 
   if (options.includeTools) {
     kinds.add("tool_call");
-    kinds.add("tool_output");
   }
 
   if (options.includeMcp) {
@@ -502,6 +566,195 @@ function matchesMcpFilter(entry, options = {}) {
   return true;
 }
 
+function isToolIdentifierStart(character) {
+  return Boolean(character) && /[A-Za-z_$]/.test(character);
+}
+
+function isToolIdentifierCharacter(character) {
+  return Boolean(character) && /[A-Za-z0-9_$]/.test(character);
+}
+
+function skipJavaScriptString(input, startIndex) {
+  const quote = input[startIndex];
+  let index = startIndex + 1;
+
+  while (index < input.length) {
+    if (input[index] === "\\") {
+      index += 2;
+      continue;
+    }
+    if (input[index] === quote) {
+      return index + 1;
+    }
+    index += 1;
+  }
+
+  return input.length;
+}
+
+function skipJavaScriptComment(input, startIndex) {
+  if (input[startIndex + 1] === "/") {
+    const endIndex = input.indexOf("\n", startIndex + 2);
+    return endIndex === -1 ? input.length : endIndex + 1;
+  }
+  if (input[startIndex + 1] === "*") {
+    const endIndex = input.indexOf("*/", startIndex + 2);
+    return endIndex === -1 ? input.length : endIndex + 2;
+  }
+  return startIndex;
+}
+
+function findJavaScriptCallEnd(input, openParenthesisIndex) {
+  let depth = 0;
+  let index = openParenthesisIndex;
+
+  while (index < input.length) {
+    const character = input[index];
+    if (character === "\"" || character === "'" || character === "`") {
+      index = skipJavaScriptString(input, index);
+      continue;
+    }
+    if (character === "/" && (input[index + 1] === "/" || input[index + 1] === "*")) {
+      index = skipJavaScriptComment(input, index);
+      continue;
+    }
+    if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+    index += 1;
+  }
+
+  return -1;
+}
+
+function parseCustomToolArguments(argumentsSource) {
+  if (!argumentsSource) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(argumentsSource);
+  } catch {
+    return { input: argumentsSource };
+  }
+}
+
+function resolveCustomToolArguments(input, argumentsSource, toolCallIndex) {
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(argumentsSource)) {
+    return parseCustomToolArguments(argumentsSource);
+  }
+
+  const variableName = argumentsSource;
+  const escapedVariableName = variableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const declarationPattern = new RegExp(
+    `\\b(?:const|let|var)\\s+${escapedVariableName}\\s*=\\s*("(?:\\\\.|[^"\\\\])*")`,
+    "g"
+  );
+  let resolvedValue;
+
+  for (const match of input.matchAll(declarationPattern)) {
+    if (match.index >= toolCallIndex) {
+      break;
+    }
+    try {
+      resolvedValue = JSON.parse(match[1]);
+    } catch {
+      // Keep looking for an earlier valid static declaration.
+    }
+  }
+
+  return resolvedValue === undefined
+    ? parseCustomToolArguments(argumentsSource)
+    : { [variableName]: resolvedValue };
+}
+
+function extractCustomToolCalls(payload) {
+  const input = payload?.input;
+  if (typeof input !== "string") {
+    return [];
+  }
+
+  const calls = [];
+  let index = 0;
+
+  while (index < input.length) {
+    const character = input[index];
+    if (character === "\"" || character === "'" || character === "`") {
+      index = skipJavaScriptString(input, index);
+      continue;
+    }
+    if (character === "/" && (input[index + 1] === "/" || input[index + 1] === "*")) {
+      index = skipJavaScriptComment(input, index);
+      continue;
+    }
+    if (!input.startsWith("tools.", index) || isToolIdentifierCharacter(input[index - 1])) {
+      index += 1;
+      continue;
+    }
+
+    const nameStart = index + "tools.".length;
+    if (!isToolIdentifierStart(input[nameStart])) {
+      index = nameStart;
+      continue;
+    }
+
+    let nameEnd = nameStart + 1;
+    while (isToolIdentifierCharacter(input[nameEnd])) {
+      nameEnd += 1;
+    }
+
+    let openParenthesisIndex = nameEnd;
+    while (/\s/.test(input[openParenthesisIndex] ?? "")) {
+      openParenthesisIndex += 1;
+    }
+    if (input[openParenthesisIndex] !== "(") {
+      index = nameEnd;
+      continue;
+    }
+
+    const closeParenthesisIndex = findJavaScriptCallEnd(input, openParenthesisIndex);
+    if (closeParenthesisIndex !== -1) {
+      calls.push({
+        name: input.slice(nameStart, nameEnd),
+        arguments: resolveCustomToolArguments(
+          input,
+          input.slice(openParenthesisIndex + 1, closeParenthesisIndex).trim(),
+          index
+        )
+      });
+    }
+    index = nameEnd;
+  }
+
+  return calls;
+}
+
+function makeCustomToolCallGroupDetails(payload, toolCalls) {
+  const { input, ...details } = payload;
+  return {
+    ...details,
+    calls: toolCalls,
+    wrapper_name: payload.name,
+    wrapper_call_id: payload.call_id
+  };
+}
+
+function makeExpandedToolCallDetails(payload, toolCall) {
+  const { input, ...details } = payload;
+  return {
+    ...details,
+    name: toolCall.name,
+    arguments: toolCall.arguments,
+    wrapper_name: payload.name,
+    wrapper_call_id: payload.call_id
+  };
+}
+
 export function extractTimeline(entries, options = {}) {
   const items = [];
   const allowedKinds = getTimelineKinds(options);
@@ -576,7 +829,7 @@ export function extractTimeline(entries, options = {}) {
     }
 
     if (
-      (allowedKinds.has("tool_call") || allowedKinds.has("tool_output") || allowedKinds.has("user_input"))
+      (allowedKinds.has("tool_call") || allowedKinds.has("user_input"))
       && entry.type === "response_item"
     ) {
       const payloadType = String(entry.payload?.type ?? "");
@@ -593,7 +846,33 @@ export function extractTimeline(entries, options = {}) {
         }
       }
 
-      if (payloadType === "function_call" && allowedKinds.has("tool_call")) {
+      if (payloadType === "custom_tool_call" && allowedKinds.has("tool_call")) {
+        const nestedToolCalls = extractCustomToolCalls(entry.payload);
+        if (nestedToolCalls.length === 1) {
+          const [toolCall] = nestedToolCalls;
+          items.push({
+            kind: "tool_call",
+            timestamp: String(entry.timestamp ?? ""),
+            message: `[tool_call] ${toolCall.name}`,
+            details: makeExpandedToolCallDetails(entry.payload, toolCall)
+          });
+          continue;
+        }
+        if (nestedToolCalls.length > 1) {
+          items.push({
+            kind: "tool_call_group",
+            timestamp: String(entry.timestamp ?? ""),
+            message: `[tool_calls] ${nestedToolCalls.length} calls`,
+            details: makeCustomToolCallGroupDetails(entry.payload, nestedToolCalls)
+          });
+          continue;
+        }
+      }
+
+      if (
+        (payloadType === "function_call" || payloadType === "custom_tool_call")
+        && allowedKinds.has("tool_call")
+      ) {
         items.push({
           kind: "tool_call",
           timestamp: String(entry.timestamp ?? ""),
@@ -603,14 +882,6 @@ export function extractTimeline(entries, options = {}) {
         continue;
       }
 
-      if (payloadType === "function_call_output" && allowedKinds.has("tool_output")) {
-        items.push({
-          kind: "tool_output",
-          timestamp: String(entry.timestamp ?? ""),
-          message: `[tool_output] ${String(entry.payload.call_id ?? "")}`.trim(),
-          details: entry.payload
-        });
-      }
     }
 
     if (allowedKinds.has("user_input") && entry.type === "event_msg") {
@@ -691,6 +962,46 @@ function formatReadableValue(value, indentLevel = 0) {
   return [`${indent}${formatScalarInline(value)}`];
 }
 
+function normalizeArgumentsValue(argumentsValue) {
+  if (typeof argumentsValue !== "string") {
+    return argumentsValue;
+  }
+
+  try {
+    return JSON.parse(argumentsValue);
+  } catch {
+    return argumentsValue;
+  }
+}
+
+function appendArguments(bodyLines, argumentsValue, options) {
+  if (argumentsValue === undefined) {
+    return;
+  }
+
+  const normalizedArguments = normalizeArgumentsValue(argumentsValue);
+  bodyLines.push("");
+  if (!options.compactArguments && normalizedArguments !== null && typeof normalizedArguments === "object") {
+    bodyLines.push("arguments:");
+    bodyLines.push(...formatReadableValue(normalizedArguments));
+    return;
+  }
+
+  bodyLines.push(`arguments: ${JSON.stringify(normalizedArguments)}`);
+}
+
+function getToolCallArguments(details) {
+  if (details?.arguments !== undefined) {
+    return details.arguments;
+  }
+
+  if (details?.input !== undefined) {
+    return { input: details.input };
+  }
+
+  return undefined;
+}
+
 function formatDisplayTimestamp(timestamp) {
   const value = String(timestamp ?? "").trim();
   if (!value) {
@@ -741,23 +1052,16 @@ export function formatMessages(messages, options = {}) {
     .map((message, index) => {
       const bodyLines = String(message.message).replace(/\r\n/g, "\n").split("\n");
       if (message.kind?.startsWith("mcp_")) {
-        const argumentsValue = message.details?.invocation?.arguments ?? message.details?.arguments;
-        if (argumentsValue !== undefined) {
-          let normalizedArguments = argumentsValue;
-          if (typeof normalizedArguments === "string") {
-            try {
-              normalizedArguments = JSON.parse(normalizedArguments);
-            } catch {
-              // Keep the original string when it is not valid JSON.
-            }
-          }
+        appendArguments(bodyLines, message.details?.invocation?.arguments ?? message.details?.arguments, options);
+      }
+      if (message.kind === "tool_call") {
+        appendArguments(bodyLines, getToolCallArguments(message.details), options);
+      }
+      if (message.kind === "tool_call_group") {
+        for (const toolCall of message.details?.calls ?? []) {
           bodyLines.push("");
-          if (!options.compactArguments && normalizedArguments !== null && typeof normalizedArguments === "object") {
-            bodyLines.push("arguments:");
-            bodyLines.push(...formatReadableValue(normalizedArguments));
-          } else {
-            bodyLines.push(`arguments: ${JSON.stringify(normalizedArguments)}`);
-          }
+          bodyLines.push(`[tool_call] ${toolCall.name}`);
+          appendArguments(bodyLines, toolCall.arguments, options);
         }
       }
       if (message.kind === "raw") {
@@ -765,16 +1069,7 @@ export function formatMessages(messages, options = {}) {
         bodyLines.push(...formatReadableValue(message.details));
       }
       if (message.kind === "user_input") {
-        const argumentsValue = message.details?.arguments ?? message.details?.questions ?? message.details;
-        if (argumentsValue !== undefined) {
-          bodyLines.push("");
-          if (!options.compactArguments && argumentsValue !== null && typeof argumentsValue === "object") {
-            bodyLines.push("arguments:");
-            bodyLines.push(...formatReadableValue(argumentsValue));
-          } else {
-            bodyLines.push(`arguments: ${JSON.stringify(argumentsValue)}`);
-          }
-        }
+        appendArguments(bodyLines, message.details?.arguments ?? message.details?.questions ?? message.details, options);
       }
 
       const lines = [

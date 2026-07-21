@@ -15,7 +15,7 @@ Current package version: `0.7.0`
 ## Why Use It
 
 - Review assistant replies from a recent Codex run
-- Inspect tool calls and tool outputs alongside assistant messages
+- Inspect concrete tool calls alongside assistant messages
 - Isolate MCP activity for debugging or audit work
 - Save a readable transcript to a text file and open it immediately
 - Target a specific session by id or read a rollout file directly
@@ -140,11 +140,12 @@ When `--id` could match more than one rollout, the CLI prefers exact rollout ide
 
 By default, `cxr` prints assistant replies only. Timeline-related flags switch it into event selection mode:
 
-- `--include-tools` selects tool call and tool output events
+- `--include-tools` selects tool call events
 - `--include-mcp` selects MCP events
 - `--include-user-input` selects RequestUserInput-style events
 - `--include-tools --include-mcp` returns the full mixed timeline with assistant, tool, and MCP events together
-- `--only assistant|tools|mcp|user-input|all` forces a single category
+- `--only assistant|tools|mcp|user-input` forces a single category
+- `--all-events` renders every raw rollout event without the default 100-item cap
 - `--mcp-server <name>` filters selected MCP events by server name
 - `--mcp-tool <name>` filters selected MCP events by tool name
 - `--timeline` keeps selected events in timestamp order, and becomes optional once include flags are present
@@ -169,14 +170,20 @@ In default text mode, multiline MCP string arguments are rendered as readable te
 
 Use `--json` if you want machine-friendly output instead.
 
-`--watch` keeps the default initial extraction rules, then streams newly appended items from the same rollout file. It does not switch to a different newer session while running. `--watch2`, `--watch3`, and other `--watchN` forms choose the Nth most recently updated main-agent rollout; subagent rollouts remain excluded.
+`--watch` keeps the default initial extraction rules, then streams newly appended items from the same rollout file. It does not switch to a different newer session while running. Use `--all-events` with `--watch` when you need every raw event. `--watch2`, `--watch3`, and other `--watchN` forms choose the Nth most recently updated main-agent rollout; subagent rollouts remain excluded.
 
 ## Examples
 
-Read only tool calls and tool outputs:
+Read only tool calls:
 
 ```bash
 cxr --only tools --json
+```
+
+Watch every raw event from one session:
+
+```bash
+cxr --id <sessionId> --watch --all-events
 ```
 
 Render MCP arguments as compact one-line JSON:
@@ -213,7 +220,8 @@ cxr --sessions-root ./fixtures/sessions --include-tools
 - `--include-mcp`: select MCP events
 - `--include-user-input`: select RequestUserInput-style events
 - `--timeline`: render selected events in timestamp order
-- `--only <kind>`: select exactly one category: `assistant`, `tools`, `mcp`, `user-input`, or `all`
+- `--only <kind>`: select exactly one category: `assistant`, `tools`, `mcp`, or `user-input`
+- `--all-events`: render every raw rollout event without the default 100-item cap; incompatible with `--only` and include selectors
 - `--mcp-server <name>`: filter selected MCP events by server name
 - `--mcp-tool <name>`: filter selected MCP events by tool name
 - `--compact-arguments`: render MCP arguments as one-line JSON instead of formatted blocks
@@ -241,6 +249,7 @@ cxr --sessions-root ./fixtures/sessions --include-tools
 | `--include-user-input` | `-U` |
 | `--timeline` | `-t` |
 | `--only <kind>` | `-y <kind>` |
+| `--all-events` | `-A` |
 | `--mcp-server <name>` | `-S <name>` |
 | `--mcp-tool <name>` | `-K <name>` |
 | `--compact-arguments` | `-c` |

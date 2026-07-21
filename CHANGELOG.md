@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.0
+
+### Added
+
+- `--all-events`（`-A`）用于输出完整原始 rollout 事件；`--only all` 保留为兼容别名，但不再作为推荐用法
+- `-T` 现在可识别 Codex 的 `custom_tool_call`，展示其中实际调用的工具名称与参数
+
+### Changed
+
+- 单个嵌套工具调用直接展示为实际工具；多个调用保留在一个简短批次中，避免外层 `exec` 淹没有效信息
+- `-T` 和 `--only tools` 仅展示工具调用，不再输出只有关联 ID 的 `tool_output`
+- `apply_patch(patch)` 会回溯同一调用中的静态 `patch` 变量并展示补丁正文
+
+### Fixed
+
+- UUID v7 会话 ID 读取会直接定位对应日期目录，避免按 ID 查询时解析全部历史 rollout 文件
+
 ## 0.7.0
 
 ### Added
