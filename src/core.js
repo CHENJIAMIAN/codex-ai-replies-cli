@@ -57,6 +57,46 @@ export function readJsonLines(filePath) {
   return entries;
 }
 
+function readFirstSessionMeta(filePath) {
+  const fileDescriptor = fs.openSync(filePath, "r");
+  const chunks = [];
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  let position = 0;
+
+  try {
+    while (true) {
+      const bytesRead = fs.readSync(fileDescriptor, buffer, 0, buffer.length, position);
+      if (bytesRead === 0) {
+        break;
+      }
+
+      const chunk = buffer.subarray(0, bytesRead);
+      const newlineIndex = chunk.indexOf(0x0A);
+      if (newlineIndex >= 0) {
+        chunks.push(Buffer.from(chunk.subarray(0, newlineIndex)));
+        break;
+      }
+
+      chunks.push(Buffer.from(chunk));
+      position += bytesRead;
+    }
+  } finally {
+    fs.closeSync(fileDescriptor);
+  }
+
+  const firstLine = Buffer.concat(chunks).toString("utf8").replace(/^\uFEFF/, "").replace(/\r$/, "");
+  if (!firstLine) {
+    return null;
+  }
+
+  try {
+    const entry = JSON.parse(firstLine);
+    return entry.type === "session_meta" ? entry.payload ?? null : null;
+  } catch (error) {
+    throw new Error(formatParseFailure(filePath, 1, error), { cause: error });
+  }
+}
+
 function getSessionMeta(entries) {
   return entries.find((entry) => entry.type === "session_meta")?.payload ?? null;
 }
@@ -158,8 +198,7 @@ function makeSessionMessagePreview(message, maxLength = 160) {
   return `${compact.slice(0, maxLength - 3)}...`;
 }
 
-function isSubagentRollout(entries) {
-  const payload = getSessionMeta(entries);
+function isSubagentSessionMeta(payload) {
   if (!payload) {
     return false;
   }
@@ -169,6 +208,33 @@ function isSubagentRollout(entries) {
 
   const sessionSource = String(payload.session_source ?? payload.source ?? "");
   return /sub.?agent/i.test(sessionSource);
+}
+
+function isSubagentRollout(entries) {
+  return isSubagentSessionMeta(getSessionMeta(entries));
+}
+
+function getSubagentThreadSpawnFromMeta(payload) {
+  const threadSpawn = payload?.source?.subagent?.thread_spawn;
+  return threadSpawn && typeof threadSpawn === "object" ? threadSpawn : null;
+}
+
+function getSubagentParentSessionIdFromMeta(payload) {
+  const threadSpawn = getSubagentThreadSpawnFromMeta(payload);
+  return [
+    threadSpawn?.parent_thread_id,
+    threadSpawn?.parentThreadId,
+    threadSpawn?.parent_id,
+    threadSpawn?.parentId,
+    threadSpawn?.parent
+  ]
+    .map((value) => normalizeLookupValue(value))
+    .find(Boolean) ?? "";
+}
+
+function getSubagentPathFromMeta(payload) {
+  const threadSpawn = getSubagentThreadSpawnFromMeta(payload);
+  return normalizeLookupValue(threadSpawn?.agent_path ?? threadSpawn?.agentPath);
 }
 
 function normalizeLookupValue(value) {
@@ -335,6 +401,128 @@ export function findRolloutById(sessionsRoot, requestedId) {
   }
 
   throw new Error(`No rollout file found for id: ${requestedId}`);
+}
+
+function getSubagentExecutionEntries(entries) {
+  const firstTurnContextIndex = entries.findIndex((entry) => entry.type === "turn_context");
+  return firstTurnContextIndex >= 0 ? entries.slice(firstTurnContextIndex + 1) : entries;
+}
+
+function getAssistantMessageDetails(entries) {
+  const eventMessages = entries
+    .filter((entry) => entry.type === "event_msg" && entry.payload?.type === "agent_message" && entry.payload?.message)
+    .map((entry) => ({
+      timestamp: String(entry.timestamp ?? ""),
+      phase: normalizeLookupValue(entry.payload.phase),
+      message: String(entry.payload.message)
+    }));
+
+  if (eventMessages.length > 0) {
+    return eventMessages;
+  }
+
+  return entries
+    .filter((entry) => entry.type === "response_item" && entry.payload?.type === "message" && entry.payload?.role === "assistant")
+    .map((entry) => ({
+      timestamp: String(entry.timestamp ?? ""),
+      phase: "assistant",
+      message: getTextContent(entry.payload.content)
+    }))
+    .filter((message) => message.message);
+}
+
+function getSubagentMessageSummary(entries) {
+  const messages = getAssistantMessageDetails(getSubagentExecutionEntries(entries));
+  const firstMessage = messages[0] ?? null;
+  const lastMessage = messages.at(-1) ?? null;
+
+  return {
+    messageCount: messages.length,
+    firstMessage: firstMessage ? makeSessionMessagePreview(firstMessage.message, 220) : null,
+    firstMessageAt: firstMessage?.timestamp || null,
+    firstPhase: firstMessage?.phase || null,
+    lastMessage: lastMessage ? makeSessionMessagePreview(lastMessage.message, 220) : null,
+    lastMessageAt: lastMessage?.timestamp || null,
+    lastPhase: lastMessage?.phase || null
+  };
+}
+
+function collectSubagentRollouts(sessionsRoot, parentRollout) {
+  if (!parentRollout?.filePath || !Array.isArray(parentRollout.entries)) {
+    throw new Error("A parent rollout with filePath and entries is required to find subagents");
+  }
+
+  const parentSessionId = getSessionId(parentRollout.filePath, parentRollout.entries);
+  const subagents = [];
+
+  for (const filePath of walkRollouts(sessionsRoot)) {
+    let sessionMeta;
+    try {
+      sessionMeta = readFirstSessionMeta(filePath);
+    } catch {
+      continue;
+    }
+
+    if (
+      !isSubagentSessionMeta(sessionMeta)
+      || getSubagentParentSessionIdFromMeta(sessionMeta) !== parentSessionId
+    ) {
+      continue;
+    }
+
+    const entries = readJsonLines(filePath);
+    const messageSummary = getSubagentMessageSummary(entries);
+    subagents.push({
+      filePath,
+      entries,
+      parentSessionId,
+      sessionId: getSessionId(filePath, entries),
+      agentPath: getSubagentPathFromMeta(sessionMeta),
+      updatedAt: fs.statSync(filePath).mtime.toISOString(),
+      ...messageSummary
+    });
+  }
+
+  return subagents.map((subagent, index) => ({
+    ...subagent,
+    rank: index + 1
+  }));
+}
+
+export function listSubagentRollouts(sessionsRoot, parentRollout) {
+  return collectSubagentRollouts(sessionsRoot, parentRollout).map(({ entries, ...subagent }) => subagent);
+}
+
+export function findSubagentRollout(sessionsRoot, parentRollout, selector) {
+  const normalizedSelector = normalizeLookupValue(selector);
+  if (!normalizedSelector) {
+    throw new Error("Subagent selector is required");
+  }
+
+  const subagents = collectSubagentRollouts(sessionsRoot, parentRollout);
+  const parentSessionId = getSessionId(parentRollout.filePath, parentRollout.entries);
+  let selected;
+
+  if (/^\d+$/.test(normalizedSelector)) {
+    const rank = Number.parseInt(normalizedSelector, 10);
+    if (!Number.isInteger(rank) || rank < 1) {
+      throw new Error("Subagent rank must be a positive integer");
+    }
+    selected = subagents[rank - 1];
+  } else {
+    const matches = subagents.filter((subagent) => subagent.agentPath === normalizedSelector);
+    if (matches.length > 1) {
+      throw new Error(`Multiple subagent rollouts match agent path: ${normalizedSelector}. Use --agent<n> instead.`);
+    }
+    selected = matches[0];
+  }
+
+  if (!selected) {
+    throw new Error(`No subagent rollout found for selector: ${normalizedSelector} under parent session: ${parentSessionId}`);
+  }
+
+  const { entries, ...agent } = selected;
+  return { filePath: selected.filePath, entries, agent };
 }
 
 export function listRecentMainSessions(sessionsRoot, count) {
@@ -1046,8 +1234,50 @@ export function formatSessionList(sessions) {
     .join("\n");
 }
 
+export function formatSubagentList(parentRollout, subagents, totalCount = subagents.length) {
+  const parentSessionId = getSessionId(parentRollout.filePath, parentRollout.entries);
+  const header = [
+    `parent session: ${parentSessionId}`,
+    `parent path: ${parentRollout.filePath}`,
+    `subagents: ${totalCount}`,
+    ...(totalCount === subagents.length ? [] : [`shown: ${subagents.length}`])
+  ].join("\n");
+
+  if (subagents.length === 0) {
+    return header;
+  }
+
+  return [
+    header,
+    ...subagents.map((subagent) => {
+      const agentPath = subagent.agentPath || "(unknown agent path)";
+      const firstMessageAt = subagent.firstMessageAt
+        ? formatDisplayTimestamp(subagent.firstMessageAt)
+        : "(no assistant message found)";
+      const lastMessageAt = subagent.lastMessageAt
+        ? formatDisplayTimestamp(subagent.lastMessageAt)
+        : "(no assistant message found)";
+      const firstPhase = subagent.firstPhase || "(unknown)";
+      const lastPhase = subagent.lastPhase || "(unknown)";
+      const firstMessage = subagent.firstMessage || "(no assistant message found)";
+      const lastMessage = subagent.lastMessage || "(no assistant message found)";
+      return [
+        "==========",
+        `[${subagent.rank}] ${agentPath}`,
+        `session id: ${subagent.sessionId}`,
+        `updated: ${formatDisplayTimestamp(subagent.updatedAt)}`,
+        `messages: ${subagent.messageCount}`,
+        `first reply (${firstMessageAt}, ${firstPhase}): ${firstMessage}`,
+        `last reply (${lastMessageAt}, ${lastPhase}): ${lastMessage}`,
+        `path: ${subagent.filePath}`
+      ].join("\n");
+    })
+  ].join("\n\n");
+}
+
 export function formatMessages(messages, options = {}) {
   const startingIndex = Number.isInteger(options.startingIndex) ? options.startingIndex : 0;
+  const sourceLine = options.sourceLabel ? `source: ${options.sourceLabel}` : null;
   return messages
     .map((message, index) => {
       const bodyLines = String(message.message).replace(/\r\n/g, "\n").split("\n");
@@ -1075,6 +1305,7 @@ export function formatMessages(messages, options = {}) {
       const lines = [
         "==========",
         `[${startingIndex + index + 1}] ${formatDisplayTimestamp(message.timestamp)}`,
+        ...(sourceLine ? [sourceLine] : []),
         "",
         ...bodyLines
       ];
@@ -1083,10 +1314,46 @@ export function formatMessages(messages, options = {}) {
     .join("\n\n");
 }
 
+function entriesHavePrefix(entries, prefix) {
+  if (entries.length < prefix.length) {
+    return false;
+  }
+
+  return prefix.every((entry, index) => JSON.stringify(entry) === JSON.stringify(entries[index]));
+}
+
+function readStableEntries(filePath) {
+  while (true) {
+    const sizeBeforeRead = fs.statSync(filePath).size;
+    const entries = readJsonLines(filePath);
+    const sizeAfterRead = fs.statSync(filePath).size;
+    if (sizeBeforeRead === sizeAfterRead) {
+      return { entries, size: sizeAfterRead };
+    }
+  }
+}
+
 export async function watchRollout(filePath, initialEntries, options = {}, onItems) {
   const allEntries = [...initialEntries];
   let emittedItemCount = extractSelectedItems(allEntries, options).length;
-  let readOffset = fs.statSync(filePath).size;
+  const initialSnapshot = readStableEntries(filePath);
+
+  if (entriesHavePrefix(initialSnapshot.entries, allEntries)) {
+    if (initialSnapshot.entries.length > allEntries.length) {
+      allEntries.push(...initialSnapshot.entries.slice(allEntries.length));
+      const selectedItems = extractSelectedItems(allEntries, options);
+      const newItems = selectedItems.slice(emittedItemCount);
+      emittedItemCount = selectedItems.length;
+      if (newItems.length > 0) {
+        await onItems(newItems);
+      }
+    }
+  } else {
+    allEntries.splice(0, allEntries.length, ...initialSnapshot.entries);
+    emittedItemCount = extractSelectedItems(allEntries, options).length;
+  }
+
+  let readOffset = initialSnapshot.size;
   let pendingText = "";
   let nextLineNumber = fs.readFileSync(filePath, "utf8").split(/\r?\n/).length;
 
@@ -1095,7 +1362,10 @@ export async function watchRollout(filePath, initialEntries, options = {}, onIte
 
     const stats = fs.statSync(filePath);
     if (stats.size < readOffset) {
-      readOffset = stats.size;
+      const resetSnapshot = readStableEntries(filePath);
+      allEntries.splice(0, allEntries.length, ...resetSnapshot.entries);
+      emittedItemCount = extractSelectedItems(allEntries, options).length;
+      readOffset = resetSnapshot.size;
       pendingText = "";
       nextLineNumber = fs.readFileSync(filePath, "utf8").split(/\r?\n/).length;
       continue;

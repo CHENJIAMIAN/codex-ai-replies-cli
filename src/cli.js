@@ -2,7 +2,22 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { defaultOutputPath, extractSelectedItems, findLatestMainRollout, findMainRolloutByRecency, findRolloutById, formatMessages, formatSessionList, listRecentMainSessions, readJsonLines, usesTimelineOutput, watchRollout } from "./core.js";
+import {
+  defaultOutputPath,
+  extractSelectedItems,
+  findLatestMainRollout,
+  findMainRolloutByRecency,
+  findRolloutById,
+  findSubagentRollout,
+  formatMessages,
+  formatSessionList,
+  formatSubagentList,
+  listRecentMainSessions,
+  listSubagentRollouts,
+  readJsonLines,
+  usesTimelineOutput,
+  watchRollout
+} from "./core.js";
 
 const HELP_TEXT = `codex-ai-replies
 
@@ -11,9 +26,13 @@ Usage:
 
 Options:
   --list-sessions, -l       list recently updated main-agent sessions, default 20
-  --count <n>, -n <n>       limit messages, or sessions with --list-sessions
+  --count <n>, -n <n>       limit messages, sessions with --list-sessions, or displayed agents with --agents
   --watch, -w [n]           stream rank n main-agent rollout by update time, default 1
   --watch<n>, -w<n>         compact rank form, for example --watch2 or -w2
+  --agents [n]              list subagents of the selected main session; optional rank defaults to 1
+  --agents<n>               compact main-session rank form, for example --agents2
+  --agent <n|agentPath>     read a selected subagent by list rank or agent path
+  --agent<n>                compact subagent rank form, for example --agent2
   --save, -s                write the extracted messages to a text file and open with VS Code when available
   --open, -O                legacy alias for opening the saved output
   --output <path>, -o <path> explicit output path
@@ -65,11 +84,35 @@ function parseArgs(argv) {
     outputPath: null,
     rawFile: null,
     sessionId: null,
-    listSessions: false
+    listSessions: false,
+    listAgents: false,
+    agentParentRank: null,
+    agentSelector: null
   };
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    const compactAgentsMatch = arg.match(/^--agents(?:=)?(\d+)$/);
+    if (compactAgentsMatch) {
+      const parentRank = Number.parseInt(compactAgentsMatch[1], 10);
+      if (!Number.isInteger(parentRank) || parentRank < 1) {
+        throw new Error("--agents rank must be a positive integer");
+      }
+      options.listAgents = true;
+      options.agentParentRank = parentRank;
+      continue;
+    }
+
+    const compactAgentMatch = arg.match(/^--agent(?:=)?(\d+)$/);
+    if (compactAgentMatch) {
+      const agentRank = Number.parseInt(compactAgentMatch[1], 10);
+      if (!Number.isInteger(agentRank) || agentRank < 1) {
+        throw new Error("--agent rank must be a positive integer");
+      }
+      options.agentSelector = String(agentRank);
+      continue;
+    }
+
     const compactWatchMatch = arg.match(/^--watch(?:=)?(\d+)$/) ?? arg.match(/^-w(\d+)$/);
     if (compactWatchMatch) {
       const watchRank = Number.parseInt(compactWatchMatch[1], 10);
@@ -111,6 +154,28 @@ function parseArgs(argv) {
           options.watchRank = watchRank;
           i += 1;
         }
+        break;
+      }
+      case "--agents": {
+        options.listAgents = true;
+        const nextValue = argv[i + 1];
+        if (nextValue && /^\d+$/.test(nextValue)) {
+          const parentRank = Number.parseInt(nextValue, 10);
+          if (!Number.isInteger(parentRank) || parentRank < 1) {
+            throw new Error("--agents rank must be a positive integer");
+          }
+          options.agentParentRank = parentRank;
+          i += 1;
+        }
+        break;
+      }
+      case "--agent": {
+        const selector = argv[i + 1];
+        if (!selector || selector.startsWith("-")) {
+          throw new Error("--agent requires a positive rank or agent path");
+        }
+        options.agentSelector = selector;
+        i += 1;
         break;
       }
       case "--save":
@@ -222,6 +287,8 @@ function parseArgs(argv) {
       [options.rawFile, "--raw-file"],
       [options.sessionId, "--id"],
       [options.watch, "--watch"],
+      [options.listAgents, "--agents"],
+      [options.agentSelector, "--agent"],
       [options.includeTools, "--include-tools"],
       [options.includeMcp, "--include-mcp"],
       [options.includeUserInput, "--include-user-input"],
@@ -235,6 +302,25 @@ function parseArgs(argv) {
 
     if (incompatibleOption) {
       throw new Error(`--list-sessions cannot be combined with ${incompatibleOption[1]}`);
+    }
+  }
+
+  if (options.listAgents && !options.agentSelector) {
+    const incompatibleOption = [
+      [options.watch, "--watch"],
+      [options.includeTools, "--include-tools"],
+      [options.includeMcp, "--include-mcp"],
+      [options.includeUserInput, "--include-user-input"],
+      [options.allEvents, "--all-events"],
+      [options.timeline, "--timeline"],
+      [options.only, "--only"],
+      [options.compactArguments, "--compact-arguments"],
+      [options.mcpServer, "--mcp-server"],
+      [options.mcpTool, "--mcp-tool"]
+    ].find(([isSet]) => Boolean(isSet));
+
+    if (incompatibleOption) {
+      throw new Error(`--agents cannot be combined with ${incompatibleOption[1]} unless --agent is also provided`);
     }
   }
 
@@ -261,9 +347,23 @@ function chooseRollout(options) {
     return findRolloutById(options.sessionsRoot, options.sessionId);
   }
 
-  return options.watchRank > 1
-    ? findMainRolloutByRecency(options.sessionsRoot, options.watchRank)
+  const rank = options.agentParentRank ?? options.watchRank;
+  return rank > 1
+    ? findMainRolloutByRecency(options.sessionsRoot, rank)
     : findLatestMainRollout(options.sessionsRoot);
+}
+
+function addSubagentSource(items, agent) {
+  return items.map((item) => ({
+    ...item,
+    source: {
+      kind: "subagent",
+      rank: agent.rank,
+      agentPath: agent.agentPath || null,
+      parentSessionId: agent.parentSessionId,
+      filePath: agent.filePath
+    }
+  }));
 }
 
 function maybeOpen(filePath) {
@@ -341,7 +441,19 @@ export async function main(argv) {
     return;
   }
 
-  const selected = chooseRollout(options);
+  const parentRollout = chooseRollout(options);
+  if (options.listAgents && !options.agentSelector) {
+    const agents = listSubagentRollouts(options.sessionsRoot, parentRollout);
+    const recentAgents = options.countProvided ? agents.slice(0, options.count) : agents;
+    const output = options.json ? JSON.stringify(recentAgents, null, 2) : formatSubagentList(parentRollout, recentAgents, agents.length);
+    process.stdout.write(`${output}\n`);
+    saveOutput(output, options);
+    return;
+  }
+
+  const selected = options.agentSelector
+    ? findSubagentRollout(options.sessionsRoot, parentRollout, options.agentSelector)
+    : { ...parentRollout, agent: null };
   const useTimelineSelection = usesTimelineOutput(options);
   const messages = extractSelectedItems(selected.entries, options);
 
@@ -358,7 +470,13 @@ export async function main(argv) {
   const recentMessages = options.only === "all" && !options.countProvided
     ? messages
     : messages.slice(-options.count);
-  const output = options.json ? JSON.stringify(recentMessages, null, 2) : formatMessages(recentMessages, options);
+  const outputMessages = selected.agent ? addSubagentSource(recentMessages, selected.agent) : recentMessages;
+  const sourceLabel = selected.agent
+    ? `subagent #${selected.agent.rank} ${selected.agent.agentPath || "(unknown agent path)"}`
+    : null;
+  const output = options.json
+    ? JSON.stringify(outputMessages, null, 2)
+    : formatMessages(outputMessages, { ...options, sourceLabel });
 
   process.stdout.write(`${output}\n`);
 
@@ -368,9 +486,10 @@ export async function main(argv) {
     let printedCount = recentMessages.length;
     await watchRollout(selected.filePath, selected.entries, options, async (newItems) => {
       const watchOutput = options.json
-        ? JSON.stringify(newItems, null, 2)
+        ? JSON.stringify(selected.agent ? addSubagentSource(newItems, selected.agent) : newItems, null, 2)
         : formatMessages(newItems, {
           ...options,
+          sourceLabel,
           startingIndex: printedCount
         });
       printedCount += newItems.length;

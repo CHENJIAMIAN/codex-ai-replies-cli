@@ -6,7 +6,7 @@ Read local Codex session rollouts as a usable CLI transcript.
 
 ## Release Status
 
-Current package version: `0.7.0`
+Current package version: `0.9.0`
 
 - Timeline filtering, rollout selection hardening, and release checks are included
 - `npm test`, `npm run test:release`, and `npm run release:final` are the intended release gates
@@ -69,6 +69,18 @@ cxr --watch3
 cxr --watch 4
 cxr -w4
 ```
+
+列出一个主会话下的子代理，再读取或跟随其中一条子代理对话：
+
+```bash
+cxr --id 019d9bb5-d432-7453-a92c-b3376ef23b58 --agents
+cxr --id 019d9bb5-d432-7453-a92c-b3376ef23b58 --agent2
+cxr --id 019d9bb5-d432-7453-a92c-b3376ef23b58 --agent /root/release_smoke_readiness --watch
+```
+
+`--agents2` 读取按更新时间排名第二的主会话的子代理列表；`--agent2` 选择列表中的第二条子代理。子代理排名按 rollout 最近更新时间排序。`--agent` 的路径选择使用 `agent_path`，避免依赖可能与父会话相同的 session ID。
+
+子代理列表会显示该代理自身首个 `turn_context` 之后的首条与末条回复摘要，避免把复制进子代理 rollout 的父会话历史误当作子代理任务。
 
 Read a specific session by id:
 
@@ -133,6 +145,7 @@ cxr --count 20 --save --output ./messages.txt
 - `--list-sessions` 按 rollout 文件更新时间列出最近的主会话，默认 20 个
 - Accepts `--id` to select a specific session
 - Accepts `--raw-file` to read one rollout JSONL file directly
+- `--agents` lists child-agent rollouts for a selected main session; `--agent` reads one child rollout
 
 When `--id` could match more than one rollout, the CLI prefers exact rollout identity matches and main-agent/root rollouts over subagent matches.
 
@@ -207,9 +220,13 @@ cxr --sessions-root ./fixtures/sessions --include-tools
 ## Command Reference
 
 - `--list-sessions`: 列出最近更新的主会话；文本输出重点展示首条与末条用户请求、工作目录、会话 ID 和 rollout 路径，默认 20 个
-- `--count <n>`: limit to the latest `n` extracted items after category filtering, default `100`; with `--list-sessions`, limit the session list
+- `--count <n>`: limit to the latest `n` extracted items after category filtering, default `100`; with `--list-sessions`, limit the session list; with `--agents`, limit displayed child agents
 - `--watch [n]`: keep streaming the nth most recently updated main-agent rollout after printing the initial selection; omit `n` for the latest rollout
 - `--watchN`: compact rank form such as `--watch2` or `--watch3`
+- `--agents [n]`: list child-agent rollouts for the selected main session; an optional rank selects the nth most recently updated main session
+- `--agentsN`: compact main-session rank form such as `--agents2`
+- `--agent <n|agentPath>`: read a child-agent rollout by its list rank or `/root/...` agent path; combine with `--watch` to follow it
+- `--agentN`: compact child-agent rank form such as `--agent2`
 - `--save`: write the extracted output to a text file and open it automatically
 - `--open`: legacy alias for saving and opening the output file
 - `--output <path>`: explicit output path
@@ -238,6 +255,8 @@ cxr --sessions-root ./fixtures/sessions --include-tools
 | `--list-sessions` | `-l` |
 | `--count <n>` | `-n <n>` |
 | `--watch [n]` | `-w [n]` |
+| `--agents` | - |
+| `--agent` | - |
 | `--save` | `-s` |
 | `--open` | `-O` |
 | `--output <path>` | `-o <path>` |

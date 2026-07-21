@@ -779,6 +779,247 @@ test("prefers the main-agent rollout when root and subagent share the requested 
   assert.doesNotMatch(result.stdout, /subagent session/);
 });
 
+test("lists and selects child-agent rollouts below a main session", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+  const parentId = "019f8221-74d3-7591-ac50-78fc244817c9";
+  const rootPath = path.join(sessionsRoot, "2026", "07", "21", `rollout-2026-07-21T08-44-18-${parentId}.jsonl`);
+  const alphaPath = path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T11-00-00-alpha.jsonl");
+  const betaPath = path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T12-00-00-beta.jsonl");
+  const unrelatedPath = path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T13-00-00-unrelated.jsonl");
+  const malformedPath = path.join(sessionsRoot, "2026", "04", "17", "rollout-2026-04-17T14-00-00-malformed.jsonl");
+
+  writeLines(rootPath, [
+    JSON.stringify({ timestamp: "2026-04-17T10:00:00Z", type: "session_meta", payload: { session_source: "cli", id: parentId } }),
+    JSON.stringify({ timestamp: "2026-04-17T10:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "root message" } })
+  ]);
+  writeLines(alphaPath, [
+    JSON.stringify({
+      timestamp: "2026-04-17T11:00:00Z",
+      type: "session_meta",
+      payload: {
+        id: parentId,
+        source: { subagent: { thread_spawn: { parent_thread_id: parentId, agent_path: "/root/alpha" } } }
+      }
+    }),
+    JSON.stringify({ timestamp: "2026-04-17T11:00:01Z", type: "event_msg", payload: { type: "agent_message", phase: "final_answer", message: "alpha result" } })
+  ]);
+  writeLines(betaPath, [
+    JSON.stringify({
+      timestamp: "2026-04-17T12:00:00Z",
+      type: "session_meta",
+      payload: {
+        id: parentId,
+        source: { subagent: { thread_spawn: { parent_thread_id: parentId, agent_path: "/root/beta" } } }
+      }
+    }),
+    JSON.stringify({ timestamp: "2026-04-17T12:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "inherited parent reply" } }),
+    JSON.stringify({ timestamp: "2026-04-17T12:00:02Z", type: "turn_context", payload: { turn_id: "beta-turn" } }),
+    JSON.stringify({ timestamp: "2026-04-17T12:00:03Z", type: "event_msg", payload: { type: "agent_message", phase: "commentary", message: "beta task preview" } }),
+    JSON.stringify({ timestamp: "2026-04-17T12:00:04Z", type: "event_msg", payload: { type: "agent_message", phase: "final_answer", message: "beta result" } })
+  ]);
+  writeLines(unrelatedPath, [
+    JSON.stringify({
+      timestamp: "2026-04-17T13:00:00Z",
+      type: "session_meta",
+      payload: {
+        id: "other-session",
+        source: { subagent: { thread_spawn: { parent_thread_id: "other-session", agent_path: "/root/unrelated" } } }
+      }
+    }),
+    JSON.stringify({ timestamp: "2026-04-17T13:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "unrelated result" } })
+  ]);
+  fs.writeFileSync(malformedPath, "{ not valid json\n", "utf8");
+
+  fs.utimesSync(alphaPath, new Date("2026-04-17T11:00:00Z"), new Date("2026-04-17T11:00:00Z"));
+  fs.utimesSync(betaPath, new Date("2026-04-17T12:00:00Z"), new Date("2026-04-17T12:00:00Z"));
+
+  const listed = runCli([
+    "--sessions-root",
+    sessionsRoot,
+    "--id",
+    parentId,
+    "--agents",
+    "--json"
+  ], { tempDir }).result;
+
+  assert.equal(listed.status, 0, `stdout=${listed.stdout}\nstderr=${listed.stderr}`);
+  const agents = JSON.parse(listed.stdout);
+  assert.deepEqual(agents.map((agent) => [agent.rank, agent.agentPath]), [
+    [1, "/root/beta"],
+    [2, "/root/alpha"]
+  ]);
+  assert.equal(agents[0].parentSessionId, parentId);
+  assert.equal(agents[0].messageCount, 2);
+  assert.equal(agents[0].firstMessage, "beta task preview");
+  assert.equal(agents[0].lastMessage, "beta result");
+  assert.equal(agents[0].lastPhase, "final_answer");
+
+  const textList = runCli([
+    "--sessions-root",
+    sessionsRoot,
+    "--id",
+    parentId,
+    "--agents"
+  ], { tempDir }).result;
+
+  assert.equal(textList.status, 0, `stdout=${textList.stdout}\nstderr=${textList.stderr}`);
+  assert.match(textList.stdout, /first reply \(.+commentary\): beta task preview/);
+  assert.match(textList.stdout, /last reply \(.+final_answer\): beta result/);
+  assert.doesNotMatch(textList.stdout, /first reply .*inherited parent reply/);
+
+  const byRank = runCli([
+    "--sessions-root",
+    sessionsRoot,
+    "--id",
+    parentId,
+    "--agent2"
+  ], { tempDir }).result;
+
+  assert.equal(byRank.status, 0, `stdout=${byRank.stdout}\nstderr=${byRank.stderr}`);
+  assert.match(byRank.stdout, /source: subagent #2 \/root\/alpha/);
+  assert.match(byRank.stdout, /alpha result/);
+  assert.doesNotMatch(byRank.stdout, /beta result/);
+
+  const byPath = runCli([
+    "--sessions-root",
+    sessionsRoot,
+    "--id",
+    parentId,
+    "--agent",
+    "/root/beta",
+    "--json"
+  ], { tempDir }).result;
+
+  assert.equal(byPath.status, 0, `stdout=${byPath.stdout}\nstderr=${byPath.stderr}`);
+  const betaMessages = JSON.parse(byPath.stdout);
+  assert.equal(betaMessages.at(-1).message, "beta result");
+  assert.equal(betaMessages.at(-1).source.agentPath, "/root/beta");
+  assert.equal(betaMessages.at(-1).source.parentSessionId, parentId);
+});
+
+test("watches a selected child-agent rollout", async () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+  const parentId = "watch-parent";
+  const rootPath = path.join(sessionsRoot, "2026", "04", "21", "rollout-2026-04-21T10-00-00-root.jsonl");
+  const subagentPath = path.join(sessionsRoot, "2026", "04", "21", "rollout-2026-04-21T11-00-00-subagent.jsonl");
+
+  writeLines(rootPath, [
+    JSON.stringify({ timestamp: "2026-04-21T10:00:00Z", type: "session_meta", payload: { session_source: "cli", id: parentId } }),
+    JSON.stringify({ timestamp: "2026-04-21T10:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "root message" } })
+  ]);
+  writeLines(subagentPath, [
+    JSON.stringify({
+      timestamp: "2026-04-21T11:00:00Z",
+      type: "session_meta",
+      payload: {
+        id: parentId,
+        source: { subagent: { thread_spawn: { parent_thread_id: parentId, agent_path: "/root/watch-child" } } }
+      }
+    }),
+    JSON.stringify({ timestamp: "2026-04-21T11:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "child initial" } })
+  ]);
+
+  const child = spawn(process.execPath, [
+    cliEntry,
+    "--sessions-root",
+    sessionsRoot,
+    "--id",
+    parentId,
+    "--agent1",
+    "--watch"
+  ], {
+    cwd: repoRoot,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+
+  try {
+    await waitForText(() => stdout, "child initial");
+    assert.match(stdout, /source: subagent #1 \/root\/watch-child/);
+
+    fs.appendFileSync(subagentPath, `${JSON.stringify({
+      timestamp: "2026-04-21T11:00:02Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "child appended" }
+    })}\n`, "utf8");
+
+    await waitForText(() => stdout, "child appended");
+    assert.match(stdout, /\[2\][\s\S]*child appended/);
+    assert.equal(stderr, "", `stderr=${stderr}`);
+  } finally {
+    if (!child.killed) {
+      child.kill();
+    }
+    await waitForExit(child);
+  }
+});
+
+test("--agentsN selects child agents from the ranked main session", () => {
+  const tempDir = makeTempDir();
+  const sessionsRoot = path.join(tempDir, "sessions");
+  const olderParentId = "older-parent";
+  const latestParentId = "latest-parent";
+  const olderRootPath = path.join(sessionsRoot, "2026", "04", "22", "rollout-2026-04-22T10-00-00-older-root.jsonl");
+  const latestRootPath = path.join(sessionsRoot, "2026", "04", "22", "rollout-2026-04-22T11-00-00-latest-root.jsonl");
+  const olderChildPath = path.join(sessionsRoot, "2026", "04", "22", "rollout-2026-04-22T12-00-00-older-child.jsonl");
+
+  writeLines(olderRootPath, [
+    JSON.stringify({ timestamp: "2026-04-22T10:00:00Z", type: "session_meta", payload: { session_source: "cli", id: olderParentId } }),
+    JSON.stringify({ timestamp: "2026-04-22T10:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "older root" } })
+  ]);
+  writeLines(latestRootPath, [
+    JSON.stringify({ timestamp: "2026-04-22T11:00:00Z", type: "session_meta", payload: { session_source: "cli", id: latestParentId } }),
+    JSON.stringify({ timestamp: "2026-04-22T11:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "latest root" } })
+  ]);
+  writeLines(olderChildPath, [
+    JSON.stringify({
+      timestamp: "2026-04-22T12:00:00Z",
+      type: "session_meta",
+      payload: {
+        id: olderParentId,
+        source: { subagent: { thread_spawn: { parent_thread_id: olderParentId, agent_path: "/root/older-child" } } }
+      }
+    }),
+    JSON.stringify({ timestamp: "2026-04-22T12:00:01Z", type: "event_msg", payload: { type: "agent_message", message: "older child" } })
+  ]);
+
+  fs.utimesSync(olderRootPath, new Date("2026-04-22T10:00:00Z"), new Date("2026-04-22T10:00:00Z"));
+  fs.utimesSync(latestRootPath, new Date("2026-04-22T11:00:00Z"), new Date("2026-04-22T11:00:00Z"));
+
+  const listed = runCli([
+    "--sessions-root",
+    sessionsRoot,
+    "--agents2",
+    "--json"
+  ], { tempDir }).result;
+
+  assert.equal(listed.status, 0, `stdout=${listed.stdout}\nstderr=${listed.stderr}`);
+  assert.equal(JSON.parse(listed.stdout)[0].agentPath, "/root/older-child");
+
+  const selected = runCli([
+    "--sessions-root",
+    sessionsRoot,
+    "--agents2",
+    "--agent1"
+  ], { tempDir }).result;
+
+  assert.equal(selected.status, 0, `stdout=${selected.stdout}\nstderr=${selected.stderr}`);
+  assert.match(selected.stdout, /older child/);
+  assert.doesNotMatch(selected.stdout, /latest root/);
+});
+
 test("matches --id against rollout identity fields instead of incidental file path substrings", () => {
   const tempDir = makeTempDir();
   const sessionsRoot = path.join(tempDir, "sessions");

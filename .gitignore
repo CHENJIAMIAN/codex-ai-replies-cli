@@ -4,3 +4,4 @@ node_modules/
 *.tgz
 smoke-output.txt
 global-smoke.txt
+.codegraph/
